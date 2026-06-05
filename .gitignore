@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local machine and assistant artifacts
+.DS_Store
+.claude/
