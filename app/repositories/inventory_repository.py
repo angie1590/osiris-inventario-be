@@ -102,6 +102,7 @@ class InventoryRepository:
     ) -> list[InventoryDocument]:
         q = (
             select(InventoryDocument)
+            .options(selectinload(InventoryDocument.lines))
             .where(InventoryDocument.doc_type == doc_type)
             .order_by(InventoryDocument.id.desc())
         )
