@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, time, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -18,6 +18,22 @@ from app.utils.export_service import ExportService
 router = APIRouter()
 
 _audit_roles = require_role(UserRole.admin, UserRole.supervisor)
+
+
+def _normalize_iso_datetime(value: str, *, end_of_day_for_date_only: bool) -> datetime:
+    raw = value.strip()
+
+    # Date-only values are interpreted as full local day bounds.
+    if "T" not in raw and " " not in raw:
+        d = datetime.fromisoformat(raw)
+        dt = datetime.combine(d.date(), time.max if end_of_day_for_date_only else time.min)
+        return dt.replace(tzinfo=timezone.utc)
+
+    # Datetime values keep their explicit precision.
+    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 @router.get("/users")
@@ -50,8 +66,8 @@ async def list_audit_users(
 
 @router.get("")
 async def list_audit(
-    date_from: datetime = Query(...),
-    date_to: datetime = Query(...),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
     user_id: int | None = None,
     action: AuditAction | None = None,
     entity_type: str | None = None,
@@ -61,12 +77,18 @@ async def list_audit(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(_audit_roles),
 ):
-    if date_from > date_to:
+    try:
+        date_from_dt = _normalize_iso_datetime(date_from, end_of_day_for_date_only=False)
+        date_to_dt = _normalize_iso_datetime(date_to, end_of_day_for_date_only=True)
+    except ValueError:
+        raise ValidationAppError("INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime")
+
+    if date_from_dt > date_to_dt:
         raise ValidationAppError("INVALID_DATE_RANGE", "date_from must be before date_to")
 
     repo = AuditRepository(db)
     logs = await repo.list(
-        date_from=date_from, date_to=date_to,
+        date_from=date_from_dt, date_to=date_to_dt,
         user_id=user_id, action=action,
         entity_type=entity_type, entity_id=entity_id,
         limit=limit, cursor=cursor,
@@ -91,8 +113,8 @@ async def list_audit(
 
 @router.get("/export")
 async def export_audit(
-    date_from: datetime = Query(...),
-    date_to: datetime = Query(...),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
     user_id: int | None = None,
     action: AuditAction | None = None,
     entity_type: str | None = None,
@@ -101,10 +123,17 @@ async def export_audit(
     current_user: User = Depends(_audit_roles),
 ):
     from app.core.config import settings
-    if date_from > date_to:
+
+    try:
+        date_from_dt = _normalize_iso_datetime(date_from, end_of_day_for_date_only=False)
+        date_to_dt = _normalize_iso_datetime(date_to, end_of_day_for_date_only=True)
+    except ValueError:
+        raise ValidationAppError("INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime")
+
+    if date_from_dt > date_to_dt:
         raise ValidationAppError("INVALID_DATE_RANGE", "date_from must be before date_to")
 
-    delta_days = (date_to - date_from).days
+    delta_days = (date_to_dt.date() - date_from_dt.date()).days
     if delta_days > settings.MAX_EXPORT_DATE_RANGE_DAYS:
         raise ValidationAppError(
             "DATE_RANGE_TOO_LARGE",
@@ -113,7 +142,7 @@ async def export_audit(
 
     repo = AuditRepository(db)
     logs = await repo.list(
-        date_from=date_from, date_to=date_to,
+        date_from=date_from_dt, date_to=date_to_dt,
         user_id=user_id, action=action,
         entity_type=entity_type,
         limit=100_000,
@@ -124,7 +153,7 @@ async def export_audit(
         [log.id, log.timestamp.strftime("%Y-%m-%d %H:%M:%S"), log.username or "", log.ip_address or "", log.action.value, log.entity_type or "", log.entity_id or "", log.description or ""]
         for log in logs
     ]
-    title = f"Log de Auditoría — {date_from.date()} a {date_to.date()}"
+    title = f"Log de Auditoría — {date_from_dt.date()} a {date_to_dt.date()}"
     data = ExportService.to_excel(headers, rows, title, sheet_name="Auditoría")
     return Response(
         content=data,
