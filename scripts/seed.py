@@ -3,6 +3,7 @@
 Usage:
     python -m scripts.seed
 """
+
 import asyncio
 import os
 import sys
@@ -17,22 +18,43 @@ from app.models.user import User
 from app.models.system_param import SystemParam
 from app.models.enums import UserRole
 
-
 INITIAL_PARAMS = [
-    ("session_timeout_minutes", "30", "Tiempo de inactividad en minutos antes de cerrar sesión"),
-    ("kardex_method", "PEPS", "Método de valoración de inventario: PEPS o WEIGHTED_AVERAGE"),
-    ("max_export_date_range_days", "90", "Máximo de días permitidos en exportaciones de auditoría"),
-    ("auth_code_expire_minutes", "15", "Minutos de validez del código de autorización para BI/AI"),
+    (
+        "session_timeout_minutes",
+        "30",
+        "Tiempo de inactividad en minutos antes de cerrar sesión",
+    ),
+    (
+        "kardex_method",
+        "PEPS",
+        "Método de valoración de inventario: PEPS o WEIGHTED_AVERAGE",
+    ),
+    (
+        "max_export_date_range_days",
+        "90",
+        "Máximo de días permitidos en exportaciones de auditoría",
+    ),
+    (
+        "auth_code_expire_minutes",
+        "15",
+        "Minutos de validez del código de autorización para BI/AI",
+    ),
     ("doc_number_padding", "6", "Cantidad de dígitos en la numeración de documentos"),
     ("report_include_logo", "true", "Incluir logo de empresa en exportaciones PDF"),
-    ("stock_quantity_mode", "integer", "Modo de cantidades de stock: 'integer' (enteros) o 'decimal' (decimales)"),
+    (
+        "stock_quantity_mode",
+        "integer",
+        "Modo de cantidades de stock: 'integer' (enteros) o 'decimal' (decimales)",
+    ),
 ]
 
 
 async def seed() -> None:
     async with AsyncSessionLocal() as session:
         # Remove deprecated params that should no longer be configurable.
-        await session.execute(delete(SystemParam).where(SystemParam.key == "doc_number_prefix"))
+        await session.execute(
+            delete(SystemParam).where(SystemParam.key == "doc_number_prefix")
+        )
 
         # Create admin user if it doesn't exist
         result = await session.execute(select(User).where(User.username == "admin"))
@@ -48,13 +70,17 @@ async def seed() -> None:
                 must_change_password=True,
             )
             session.add(admin)
-            print("Created initial admin user (username: admin, password: Admin@12345!) — change on first login!")
+            print(
+                "Created initial admin user (username: admin, password: Admin@12345!) — change on first login!"
+            )
         else:
             print("Admin user already exists, skipping.")
 
         # Create system params if they don't exist
         for key, value, description in INITIAL_PARAMS:
-            result = await session.execute(select(SystemParam).where(SystemParam.key == key))
+            result = await session.execute(
+                select(SystemParam).where(SystemParam.key == key)
+            )
             if not result.scalar_one_or_none():
                 session.add(SystemParam(key=key, value=value, description=description))
                 print(f"Created param: {key} = {value}")

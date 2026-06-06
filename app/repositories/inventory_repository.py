@@ -8,7 +8,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.inventory import AuthorizationCode, DocumentSequence, InventoryDocument, InventoryDocumentLine
+from app.models.inventory import (
+    AuthorizationCode,
+    DocumentSequence,
+    InventoryDocument,
+    InventoryDocumentLine,
+)
 from app.models.enums import DocumentStatus, DocumentType
 from app.models.system_param import SystemParam
 
@@ -18,7 +23,9 @@ class InventoryRepository:
         self.db = db
 
     async def _get_doc_number_padding(self) -> int:
-        result = await self.db.execute(select(SystemParam).where(SystemParam.key == "doc_number_padding"))
+        result = await self.db.execute(
+            select(SystemParam).where(SystemParam.key == "doc_number_padding")
+        )
         param = result.scalar_one_or_none()
         if not param:
             return 6
@@ -49,7 +56,9 @@ class InventoryRepository:
         padding = await self._get_doc_number_padding()
         return f"{doc_type.value}-{year}-{seq.last_number:0{padding}d}"
 
-    async def create_document(self, document: InventoryDocument, lines: list[InventoryDocumentLine]) -> InventoryDocument:
+    async def create_document(
+        self, document: InventoryDocument, lines: list[InventoryDocumentLine]
+    ) -> InventoryDocument:
         self.db.add(document)
         await self.db.flush()
         for line in lines:
@@ -91,7 +100,11 @@ class InventoryRepository:
         limit: int = 50,
         cursor: int | None = None,
     ) -> list[InventoryDocument]:
-        q = select(InventoryDocument).where(InventoryDocument.doc_type == doc_type).order_by(InventoryDocument.id.desc())
+        q = (
+            select(InventoryDocument)
+            .where(InventoryDocument.doc_type == doc_type)
+            .order_by(InventoryDocument.id.desc())
+        )
         if date_from:
             q = q.where(InventoryDocument.created_at >= date_from)
         if date_to:
@@ -101,7 +114,9 @@ class InventoryRepository:
         if status:
             q = q.where(InventoryDocument.status == status)
         if product_id:
-            q = q.join(InventoryDocumentLine).where(InventoryDocumentLine.product_id == product_id)
+            q = q.join(InventoryDocumentLine).where(
+                InventoryDocumentLine.product_id == product_id
+            )
         if cursor:
             q = q.where(InventoryDocument.id < cursor)
         q = q.limit(limit)
@@ -113,7 +128,9 @@ class InventoryRepository:
         await self.db.flush()
         return code
 
-    async def get_valid_auth_code(self, document_id: int, now: datetime) -> AuthorizationCode | None:
+    async def get_valid_auth_code(
+        self, document_id: int, now: datetime
+    ) -> AuthorizationCode | None:
         result = await self.db.execute(
             select(AuthorizationCode)
             .where(

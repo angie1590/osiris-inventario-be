@@ -71,18 +71,25 @@ async def update_param(
 
     normalized_value = body.value.strip()
     if not normalized_value:
-        raise ValidationAppError("EMPTY_PARAM_VALUE", f"Parameter '{key}' cannot be empty")
+        raise ValidationAppError(
+            "EMPTY_PARAM_VALUE", f"Parameter '{key}' cannot be empty"
+        )
 
     if key in _numeric_params:
         if not normalized_value.isdigit():
-            raise ValidationAppError("INVALID_PARAM_VALUE", f"Parameter '{key}' must be an integer")
+            raise ValidationAppError(
+                "INVALID_PARAM_VALUE", f"Parameter '{key}' must be an integer"
+            )
 
     # Special validation for kardex_method change
     if key == "kardex_method":
         new_method = normalized_value.upper()
         if new_method not in ("PEPS", "WEIGHTED_AVERAGE"):
             from app.core.exceptions import ValidationAppError
-            raise ValidationAppError("INVALID_KARDEX_METHOD", "Method must be PEPS or WEIGHTED_AVERAGE")
+
+            raise ValidationAppError(
+                "INVALID_KARDEX_METHOD", "Method must be PEPS or WEIGHTED_AVERAGE"
+            )
 
         current_year = datetime.now(timezone.utc).year
         year_start = datetime(current_year, 1, 1, tzinfo=timezone.utc)
@@ -90,7 +97,10 @@ async def update_param(
             select(KardexEntry.id).where(KardexEntry.created_at >= year_start).limit(1)
         )
         if check.scalar_one_or_none() is not None:
-            raise ConflictError("KARDEX_METHOD_LOCKED", "Cannot change kardex method with movements in the current fiscal year")
+            raise ConflictError(
+                "KARDEX_METHOD_LOCKED",
+                "Cannot change kardex method with movements in the current fiscal year",
+            )
 
     previous = {"value": param.value}
     param.value = normalized_value
@@ -98,9 +108,13 @@ async def update_param(
 
     audit = AuditService(db)
     await audit.log(
-        AuditAction.UPDATE, user_id=current_user.id, username=current_user.username,
-        entity_type="system_param", entity_id=key,
-        previous=previous, new={"value": normalized_value},
+        AuditAction.UPDATE,
+        user_id=current_user.id,
+        username=current_user.username,
+        entity_type="system_param",
+        entity_id=key,
+        previous=previous,
+        new={"value": normalized_value},
         description=f"Parameter '{key}' updated",
         request=request,
     )
