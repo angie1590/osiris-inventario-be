@@ -11,6 +11,7 @@ class LoginResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     require_password_change: bool = False
+    session_timeout_minutes: int = 30
 
 
 class RefreshRequest(BaseModel):
@@ -21,6 +22,7 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    session_timeout_minutes: int = 30
 
 
 class ChangePasswordRequest(BaseModel):

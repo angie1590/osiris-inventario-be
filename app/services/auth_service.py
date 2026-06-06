@@ -2,6 +2,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -15,6 +16,7 @@ from app.core.security import (
     verify_password,
 )
 from app.models.enums import AuditAction
+from app.models.system_param import SystemParam
 from app.models.user import RefreshToken, User
 from app.repositories.user_repository import UserRepository
 from app.services.audit_service import AuditService
@@ -29,6 +31,18 @@ class AuthService:
         self.db = db
         self.user_repo = UserRepository(db)
         self.audit = AuditService(db)
+
+    async def _get_session_timeout_minutes(self) -> int:
+        result = await self.db.execute(select(SystemParam).where(SystemParam.key == "session_timeout_minutes"))
+        param = result.scalar_one_or_none()
+        default_value = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+        if not param:
+            return default_value
+        try:
+            value = int(param.value)
+        except (TypeError, ValueError):
+            return default_value
+        return value if value > 0 else default_value
 
     async def login(self, username: str, password: str, request: Request | None = None) -> dict:
         user = await self.user_repo.get_by_username(username)
@@ -76,7 +90,8 @@ class AuthService:
 
         # Initialize inactivity key in Redis
         redis = await get_redis()
-        session_ttl = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        session_timeout_minutes = await self._get_session_timeout_minutes()
+        session_ttl = session_timeout_minutes * 60
         await redis.setex(f"session:{user.id}:{access_token[-16:]}", session_ttl, "1")
 
         await self.audit.log(
@@ -95,6 +110,7 @@ class AuthService:
             "refresh_token": refresh_token_str,
             "token_type": "bearer",
             "require_password_change": user.must_change_password,
+            "session_timeout_minutes": session_timeout_minutes,
         }
 
     async def refresh(self, refresh_token_str: str) -> dict:
@@ -125,11 +141,17 @@ class AuthService:
             user.id, extra_claims={"role": user.role.value, "username": user.username}
         )
         redis = await get_redis()
-        session_ttl = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        session_timeout_minutes = await self._get_session_timeout_minutes()
+        session_ttl = session_timeout_minutes * 60
         await redis.setex(f"session:{user.id}:{access_token[-16:]}", session_ttl, "1")
 
         await self.db.commit()
-        return {"access_token": access_token, "refresh_token": new_refresh, "token_type": "bearer"}
+        return {
+            "access_token": access_token,
+            "refresh_token": new_refresh,
+            "token_type": "bearer",
+            "session_timeout_minutes": session_timeout_minutes,
+        }
 
     async def logout(self, user: User, access_token: str, request: Request | None = None) -> None:
         # Blacklist access token in Redis

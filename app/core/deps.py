@@ -1,6 +1,7 @@
 from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -8,6 +9,7 @@ from app.core.exceptions import ForbiddenError, UnauthorizedError, ValidationApp
 from app.core.redis import get_redis
 from app.core.security import decode_token
 from app.models.enums import UserRole
+from app.models.system_param import SystemParam
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 
@@ -43,7 +45,17 @@ async def get_current_user(
 
     # Refresh inactivity TTL on every authenticated request
     from app.core.config import settings
-    session_ttl = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    result = await db.execute(select(SystemParam).where(SystemParam.key == "session_timeout_minutes"))
+    param = result.scalar_one_or_none()
+    session_minutes = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+    if param:
+        try:
+            parsed = int(param.value)
+            if parsed > 0:
+                session_minutes = parsed
+        except (TypeError, ValueError):
+            pass
+    session_ttl = session_minutes * 60
     await redis.expire(session_key, session_ttl)
 
     repo = UserRepository(db)
