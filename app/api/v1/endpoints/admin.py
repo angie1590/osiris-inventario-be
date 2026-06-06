@@ -17,6 +17,7 @@ from app.services.audit_service import AuditService
 router = APIRouter()
 
 _admin_only = require_role(UserRole.admin)
+_hidden_params = {"doc_number_prefix"}
 _numeric_params = {
     "session_timeout_minutes",
     "max_export_date_range_days",
@@ -44,7 +45,11 @@ async def list_params(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(_admin_only),
 ):
-    result = await db.execute(select(SystemParam).order_by(SystemParam.key))
+    result = await db.execute(
+        select(SystemParam)
+        .where(SystemParam.key.not_in(_hidden_params))
+        .order_by(SystemParam.key)
+    )
     return list(result.scalars().all())
 
 
@@ -56,6 +61,9 @@ async def update_param(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(_admin_only),
 ):
+    if key in _hidden_params:
+        raise NotFoundError("PARAM_NOT_FOUND", f"Parameter '{key}' not found")
+
     result = await db.execute(select(SystemParam).where(SystemParam.key == key))
     param = result.scalar_one_or_none()
     if not param:

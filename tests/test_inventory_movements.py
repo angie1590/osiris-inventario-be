@@ -101,6 +101,31 @@ async def test_document_numbering_consecutive(client: AsyncClient, admin_token: 
 
 
 @pytest.mark.asyncio
+async def test_document_numbering_uses_configured_padding(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+    db_session: AsyncSession,
+):
+    from app.models.system_param import SystemParam
+
+    db_session.add(SystemParam(key="doc_number_padding", value="4", description="test"))
+    await db_session.commit()
+
+    prod_id = await _create_product(client, admin_token, operator_token, "Padding Test")
+    resp = await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 201
+    number = resp.json()["number"]
+    sequence = number.rsplit("-", 1)[1]
+    assert sequence == "0001"
+
+
+@pytest.mark.asyncio
 async def test_baja_flow(client: AsyncClient, admin_token: str, operator_token: str):
     prod_id = await _create_product(client, admin_token, operator_token, "Baja Flow Test")
 

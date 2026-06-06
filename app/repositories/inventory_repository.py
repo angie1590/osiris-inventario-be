@@ -10,11 +10,25 @@ from sqlalchemy.orm import selectinload
 
 from app.models.inventory import AuthorizationCode, DocumentSequence, InventoryDocument, InventoryDocumentLine
 from app.models.enums import DocumentStatus, DocumentType
+from app.models.system_param import SystemParam
 
 
 class InventoryRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def _get_doc_number_padding(self) -> int:
+        result = await self.db.execute(select(SystemParam).where(SystemParam.key == "doc_number_padding"))
+        param = result.scalar_one_or_none()
+        if not param:
+            return 6
+
+        try:
+            padding = int(param.value)
+        except (TypeError, ValueError):
+            return 6
+
+        return padding if padding > 0 else 6
 
     async def generate_document_number(self, doc_type: DocumentType, year: int) -> str:
         """Generate next sequential document number with row-level lock."""
@@ -32,7 +46,8 @@ class InventoryRepository:
 
         seq.last_number += 1
         await self.db.flush()
-        return f"{doc_type.value}-{year}-{seq.last_number:06d}"
+        padding = await self._get_doc_number_padding()
+        return f"{doc_type.value}-{year}-{seq.last_number:0{padding}d}"
 
     async def create_document(self, document: InventoryDocument, lines: list[InventoryDocumentLine]) -> InventoryDocument:
         self.db.add(document)

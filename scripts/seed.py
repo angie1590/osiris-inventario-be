@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.core.database import AsyncSessionLocal
 from app.core.security import hash_password
@@ -23,7 +23,6 @@ INITIAL_PARAMS = [
     ("kardex_method", "PEPS", "Método de valoración de inventario: PEPS o WEIGHTED_AVERAGE"),
     ("max_export_date_range_days", "90", "Máximo de días permitidos en exportaciones de auditoría"),
     ("auth_code_expire_minutes", "15", "Minutos de validez del código de autorización para BI/AI"),
-    ("doc_number_prefix", "OSR", "Prefijo para la numeración de documentos transaccionales"),
     ("doc_number_padding", "6", "Cantidad de dígitos en la numeración de documentos"),
     ("report_include_logo", "true", "Incluir logo de empresa en exportaciones PDF"),
     ("stock_quantity_mode", "integer", "Modo de cantidades de stock: 'integer' (enteros) o 'decimal' (decimales)"),
@@ -32,6 +31,9 @@ INITIAL_PARAMS = [
 
 async def seed() -> None:
     async with AsyncSessionLocal() as session:
+        # Remove deprecated params that should no longer be configurable.
+        await session.execute(delete(SystemParam).where(SystemParam.key == "doc_number_prefix"))
+
         # Create admin user if it doesn't exist
         result = await session.execute(select(User).where(User.username == "admin"))
         existing_admin = result.scalar_one_or_none()
