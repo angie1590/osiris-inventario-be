@@ -57,7 +57,7 @@ async def create_user(
         entity_type="user",
         entity_id=user.id,
         new={"username": user.username, "role": user.role.value, "full_name": user.full_name},
-        description=f"User '{user.username}' created",
+        description=f"Usuario '{user.username}' creado",
         request=request,
     )
     await db.commit()
@@ -120,7 +120,7 @@ async def update_user(
             "full_name": user.full_name,
             "must_change_password": user.must_change_password,
         },
-        description=f"User '{user.username}' updated",
+        description=f"Usuario '{user.username}' actualizado",
         request=request,
     )
     await db.commit()
@@ -154,7 +154,7 @@ async def deactivate_user(
         entity_id=user.id,
         previous=previous,
         new={"is_active": False},
-        description=f"User '{user.username}' deactivated",
+        description=f"Usuario '{user.username}' desactivado",
         request=request,
     )
     await db.commit()

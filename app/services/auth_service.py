@@ -37,13 +37,28 @@ class AuthService:
             await self.audit.log(
                 AuditAction.LOGIN_FAILED,
                 username=username,
-                description=f"Failed login attempt for '{username}'",
+                entity_type="user",
+                entity_id=user.id if user else None,
+                new={"username_attempt": username, "reason": "invalid_credentials"},
+                description=f"Intento fallido de inicio de sesión para '{username}'",
                 request=request,
             )
             await self.db.commit()
             raise UnauthorizedError("INVALID_CREDENTIALS", "Invalid credentials")
 
         if not user.is_active:
+            await self.audit.log(
+                AuditAction.LOGIN_FAILED,
+                user_id=user.id,
+                username=user.username,
+                entity_type="user",
+                entity_id=user.id,
+                previous={"is_active": user.is_active},
+                new={"username_attempt": username, "reason": "account_inactive"},
+                description=f"Intento de inicio de sesión con usuario inactivo '{user.username}'",
+                request=request,
+            )
+            await self.db.commit()
             raise UnauthorizedError("ACCOUNT_INACTIVE", "Account is inactive")
 
         access_token = create_access_token(
@@ -70,7 +85,7 @@ class AuthService:
             username=user.username,
             entity_type="user",
             entity_id=user.id,
-            description="Successful login",
+            description="Inicio de sesión exitoso",
             request=request,
         )
         await self.db.commit()
@@ -133,7 +148,7 @@ class AuthService:
             username=user.username,
             entity_type="user",
             entity_id=user.id,
-            description="User logged out",
+            description="Cierre de sesión",
             request=request,
         )
         await self.db.commit()
@@ -158,7 +173,7 @@ class AuthService:
             username=user.username,
             entity_type="user",
             entity_id=user.id,
-            description="Password changed",
+            description="Contraseña actualizada",
             request=request,
         )
         await self.db.commit()
