@@ -1,10 +1,12 @@
 """Tests: inventory movements IN/EG/BI/AI (tasks 13.5, 13.6)"""
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -252,6 +254,50 @@ async def test_baja_invalid_auth_code(
     )
     assert resp.status_code == 422
     assert resp.json()["code"] == "AUTHORIZATION_CODE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_auth_code_expiration_uses_configured_param(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+    db_session: AsyncSession,
+):
+    from app.models.inventory import AuthorizationCode
+    from app.models.system_param import SystemParam
+
+    db_session.add(
+        SystemParam(key="auth_code_expire_minutes", value="2", description="test")
+    )
+    await db_session.commit()
+
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Expire Param Test"
+    )
+    bi_resp = await client.post(
+        "/api/v1/inventory/bajas",
+        json={"lines": [{"product_id": prod_id, "quantity": "1.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    bi_id = bi_resp.json()["id"]
+
+    now = datetime.now(timezone.utc)
+    code_resp = await client.post(
+        f"/api/v1/inventory/bajas/{bi_id}/authorization-code",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert code_resp.status_code == 201
+
+    result = await db_session.execute(
+        select(AuthorizationCode)
+        .where(AuthorizationCode.document_id == bi_id)
+        .order_by(AuthorizationCode.created_at.desc())
+        .limit(1)
+    )
+    rec = result.scalar_one()
+
+    delta_seconds = (rec.expires_at - now).total_seconds()
+    assert 90 <= delta_seconds <= 150
 
 
 @pytest.mark.asyncio

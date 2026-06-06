@@ -1,9 +1,13 @@
 """Tests: reports with filters, date validation, PDF/Excel export (task 13.9)"""
+
+from io import BytesIO
 from datetime import datetime, timezone, timedelta
 
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from openpyxl import load_workbook
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _now():
@@ -44,7 +48,9 @@ async def _seed_ingreso(client, admin_token, operator_token):
 
 
 @pytest.mark.asyncio
-async def test_report_ingresos_json(client: AsyncClient, admin_token: str, operator_token: str):
+async def test_report_ingresos_json(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
     await _seed_ingreso(client, admin_token, operator_token)
     frm, to = _range(days_back=1)
     resp = await client.get(
@@ -60,7 +66,9 @@ async def test_report_ingresos_json(client: AsyncClient, admin_token: str, opera
 
 
 @pytest.mark.asyncio
-async def test_report_ingresos_excel(client: AsyncClient, admin_token: str, operator_token: str):
+async def test_report_ingresos_excel(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
     await _seed_ingreso(client, admin_token, operator_token)
     frm, to = _range(days_back=1)
     resp = await client.get(
@@ -73,7 +81,9 @@ async def test_report_ingresos_excel(client: AsyncClient, admin_token: str, oper
 
 
 @pytest.mark.asyncio
-async def test_report_ingresos_pdf(client: AsyncClient, admin_token: str, operator_token: str):
+async def test_report_ingresos_pdf(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
     await _seed_ingreso(client, admin_token, operator_token)
     frm, to = _range(days_back=1)
     resp = await client.get(
@@ -98,7 +108,9 @@ async def test_report_ingresos_inverted_dates(client: AsyncClient, admin_token: 
 
 
 @pytest.mark.asyncio
-async def test_report_stock_json(client: AsyncClient, admin_token: str, operator_token: str):
+async def test_report_stock_json(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
     await _seed_ingreso(client, admin_token, operator_token)
     resp = await client.get(
         "/api/v1/reports/stock?format=json",
@@ -123,7 +135,33 @@ async def test_report_stock_excel(client: AsyncClient, admin_token: str):
 
 
 @pytest.mark.asyncio
-async def test_report_consolidado(client: AsyncClient, admin_token: str, operator_token: str):
+async def test_report_stock_excel_hides_company_header_when_logo_disabled(
+    client: AsyncClient,
+    admin_token: str,
+    db_session: AsyncSession,
+):
+    from app.models.system_param import SystemParam
+
+    db_session.add(
+        SystemParam(key="report_include_logo", value="false", description="test")
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        "/api/v1/reports/stock?format=excel",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+
+    wb = load_workbook(BytesIO(resp.content))
+    ws = wb.active
+    assert ws["A1"].value == "Reporte de Stock Actual"
+
+
+@pytest.mark.asyncio
+async def test_report_consolidado(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
     await _seed_ingreso(client, admin_token, operator_token)
     frm, to = _range(days_back=1)
     resp = await client.get(
@@ -140,7 +178,9 @@ async def test_report_consolidado(client: AsyncClient, admin_token: str, operato
 
 
 @pytest.mark.asyncio
-async def test_report_stock_valorizado(client: AsyncClient, admin_token: str, operator_token: str):
+async def test_report_stock_valorizado(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
     await _seed_ingreso(client, admin_token, operator_token)
     resp = await client.get(
         "/api/v1/reports/stock-valorizado",
@@ -154,7 +194,9 @@ async def test_report_stock_valorizado(client: AsyncClient, admin_token: str, op
 
 
 @pytest.mark.asyncio
-async def test_report_requires_admin_or_supervisor(client: AsyncClient, operator_token: str):
+async def test_report_requires_admin_or_supervisor(
+    client: AsyncClient, operator_token: str
+):
     frm, to = _range(days_back=1)
     resp = await client.get(
         "/api/v1/reports/ingresos",

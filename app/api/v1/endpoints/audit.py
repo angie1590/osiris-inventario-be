@@ -12,6 +12,7 @@ from app.core.deps import require_role
 from app.core.config import settings
 from app.core.exceptions import ValidationAppError
 from app.models.enums import AuditAction, UserRole
+from app.models.system_param import SystemParam
 from app.models.user import User as AppUser
 from app.models.user import User
 from app.repositories.audit_repository import AuditRepository
@@ -22,14 +23,33 @@ router = APIRouter()
 _audit_roles = require_role(UserRole.admin, UserRole.supervisor)
 
 
-def _parse_iso_datetime(value: str, *, end_of_day_for_date_only: bool) -> tuple[datetime, bool, date | None]:
+async def _get_max_export_days(db: AsyncSession) -> int:
+    result = await db.execute(
+        select(SystemParam).where(SystemParam.key == "max_export_date_range_days")
+    )
+    param = result.scalar_one_or_none()
+    default_value = settings.MAX_EXPORT_DATE_RANGE_DAYS
+    if not param:
+        return default_value
+    try:
+        value = int(param.value)
+    except (TypeError, ValueError):
+        return default_value
+    return value if value > 0 else default_value
+
+
+def _parse_iso_datetime(
+    value: str, *, end_of_day_for_date_only: bool
+) -> tuple[datetime, bool, date | None]:
     raw = value.strip()
 
     # Date-only values are interpreted as full day bounds in business timezone.
     if "T" not in raw and " " not in raw:
         d = date.fromisoformat(raw)
         local_tz = ZoneInfo(settings.APP_TIMEZONE)
-        local_dt = datetime.combine(d, time.max if end_of_day_for_date_only else time.min, tzinfo=local_tz)
+        local_dt = datetime.combine(
+            d, time.max if end_of_day_for_date_only else time.min, tzinfo=local_tz
+        )
         return local_dt.astimezone(timezone.utc), True, d
 
     # Datetime values keep their explicit precision.
@@ -46,7 +66,9 @@ async def list_audit_users(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(_audit_roles),
 ):
-    q = select(AppUser.id, AppUser.username, AppUser.full_name).order_by(AppUser.full_name, AppUser.username)
+    q = select(AppUser.id, AppUser.username, AppUser.full_name).order_by(
+        AppUser.full_name, AppUser.username
+    )
     if search:
         term = f"%{search.strip()}%"
         q = q.where(
@@ -81,20 +103,30 @@ async def list_audit(
     _: User = Depends(_audit_roles),
 ):
     try:
-        date_from_dt, _, _ = _parse_iso_datetime(date_from, end_of_day_for_date_only=False)
+        date_from_dt, _, _ = _parse_iso_datetime(
+            date_from, end_of_day_for_date_only=False
+        )
         date_to_dt, _, _ = _parse_iso_datetime(date_to, end_of_day_for_date_only=True)
     except ValueError:
-        raise ValidationAppError("INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime")
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime"
+        )
 
     if date_from_dt > date_to_dt:
-        raise ValidationAppError("INVALID_DATE_RANGE", "date_from must be before date_to")
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "date_from must be before date_to"
+        )
 
     repo = AuditRepository(db)
     logs = await repo.list(
-        date_from=date_from_dt, date_to=date_to_dt,
-        user_id=user_id, action=action,
-        entity_type=entity_type, entity_id=entity_id,
-        limit=limit, cursor=cursor,
+        date_from=date_from_dt,
+        date_to=date_to_dt,
+        user_id=user_id,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        limit=limit,
+        cursor=cursor,
     )
     return [
         {
@@ -128,33 +160,53 @@ async def export_audit(
     local_tz = ZoneInfo(settings.APP_TIMEZONE)
 
     try:
-        date_from_dt, date_from_only, date_from_date = _parse_iso_datetime(date_from, end_of_day_for_date_only=False)
-        date_to_dt, date_to_only, date_to_date = _parse_iso_datetime(date_to, end_of_day_for_date_only=True)
+        date_from_dt, date_from_only, date_from_date = _parse_iso_datetime(
+            date_from, end_of_day_for_date_only=False
+        )
+        date_to_dt, date_to_only, date_to_date = _parse_iso_datetime(
+            date_to, end_of_day_for_date_only=True
+        )
     except ValueError:
-        raise ValidationAppError("INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime")
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime"
+        )
 
     if date_from_dt > date_to_dt:
-        raise ValidationAppError("INVALID_DATE_RANGE", "date_from must be before date_to")
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "date_from must be before date_to"
+        )
 
     if date_from_only and date_to_only and date_from_date and date_to_date:
         delta_days = (date_to_date - date_from_date).days
     else:
         delta_days = (date_to_dt.date() - date_from_dt.date()).days
-    if delta_days > settings.MAX_EXPORT_DATE_RANGE_DAYS:
+    max_export_days = await _get_max_export_days(db)
+    if delta_days > max_export_days:
         raise ValidationAppError(
             "DATE_RANGE_TOO_LARGE",
-            f"Export date range cannot exceed {settings.MAX_EXPORT_DATE_RANGE_DAYS} days",
+            f"Export date range cannot exceed {max_export_days} days",
         )
 
     repo = AuditRepository(db)
     logs = await repo.list(
-        date_from=date_from_dt, date_to=date_to_dt,
-        user_id=user_id, action=action,
+        date_from=date_from_dt,
+        date_to=date_to_dt,
+        user_id=user_id,
+        action=action,
         entity_type=entity_type,
         limit=100_000,
     )
 
-    headers = ["ID", "Timestamp", "Usuario", "IP", "Acción", "Entidad", "ID Entidad", "Descripción"]
+    headers = [
+        "ID",
+        "Timestamp",
+        "Usuario",
+        "IP",
+        "Acción",
+        "Entidad",
+        "ID Entidad",
+        "Descripción",
+    ]
     rows = [
         [
             log.id,
@@ -168,8 +220,16 @@ async def export_audit(
         ]
         for log in logs
     ]
-    title_from = date_from_date if date_from_only and date_from_date else date_from_dt.astimezone(local_tz).date()
-    title_to = date_to_date if date_to_only and date_to_date else date_to_dt.astimezone(local_tz).date()
+    title_from = (
+        date_from_date
+        if date_from_only and date_from_date
+        else date_from_dt.astimezone(local_tz).date()
+    )
+    title_to = (
+        date_to_date
+        if date_to_only and date_to_date
+        else date_to_dt.astimezone(local_tz).date()
+    )
     title = f"Log de Auditoría — {title_from} a {title_to}"
     data = ExportService.to_excel(headers, rows, title, sheet_name="Auditoría")
     return Response(
