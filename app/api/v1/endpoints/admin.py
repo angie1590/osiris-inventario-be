@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import require_role
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationAppError
 from app.models.enums import AuditAction, UserRole
 from app.models.kardex import KardexEntry
 from app.models.system_param import SystemParam
@@ -17,6 +17,12 @@ from app.services.audit_service import AuditService
 router = APIRouter()
 
 _admin_only = require_role(UserRole.admin)
+_numeric_params = {
+    "session_timeout_minutes",
+    "max_export_date_range_days",
+    "auth_code_expire_minutes",
+    "doc_number_padding",
+}
 
 
 class ParamUpdate(BaseModel):
@@ -54,6 +60,10 @@ async def update_param(
     param = result.scalar_one_or_none()
     if not param:
         raise NotFoundError("PARAM_NOT_FOUND", f"Parameter '{key}' not found")
+
+    if key in _numeric_params:
+        if not body.value.isdigit():
+            raise ValidationAppError("INVALID_PARAM_VALUE", f"Parameter '{key}' must be an integer")
 
     # Special validation for kardex_method change
     if key == "kardex_method":
