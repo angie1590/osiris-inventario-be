@@ -1,5 +1,6 @@
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import require_role
+from app.core.config import settings
 from app.core.exceptions import ValidationAppError
 from app.models.enums import AuditAction, UserRole
 from app.models.user import User as AppUser
@@ -20,20 +22,21 @@ router = APIRouter()
 _audit_roles = require_role(UserRole.admin, UserRole.supervisor)
 
 
-def _normalize_iso_datetime(value: str, *, end_of_day_for_date_only: bool) -> datetime:
+def _parse_iso_datetime(value: str, *, end_of_day_for_date_only: bool) -> tuple[datetime, bool, date | None]:
     raw = value.strip()
 
-    # Date-only values are interpreted as full local day bounds.
+    # Date-only values are interpreted as full day bounds in business timezone.
     if "T" not in raw and " " not in raw:
-        d = datetime.fromisoformat(raw)
-        dt = datetime.combine(d.date(), time.max if end_of_day_for_date_only else time.min)
-        return dt.replace(tzinfo=timezone.utc)
+        d = date.fromisoformat(raw)
+        local_tz = ZoneInfo(settings.APP_TIMEZONE)
+        local_dt = datetime.combine(d, time.max if end_of_day_for_date_only else time.min, tzinfo=local_tz)
+        return local_dt.astimezone(timezone.utc), True, d
 
     # Datetime values keep their explicit precision.
     dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    return dt, False, None
 
 
 @router.get("/users")
@@ -78,8 +81,8 @@ async def list_audit(
     _: User = Depends(_audit_roles),
 ):
     try:
-        date_from_dt = _normalize_iso_datetime(date_from, end_of_day_for_date_only=False)
-        date_to_dt = _normalize_iso_datetime(date_to, end_of_day_for_date_only=True)
+        date_from_dt, _, _ = _parse_iso_datetime(date_from, end_of_day_for_date_only=False)
+        date_to_dt, _, _ = _parse_iso_datetime(date_to, end_of_day_for_date_only=True)
     except ValueError:
         raise ValidationAppError("INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime")
 
@@ -122,18 +125,19 @@ async def export_audit(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(_audit_roles),
 ):
-    from app.core.config import settings
-
     try:
-        date_from_dt = _normalize_iso_datetime(date_from, end_of_day_for_date_only=False)
-        date_to_dt = _normalize_iso_datetime(date_to, end_of_day_for_date_only=True)
+        date_from_dt, date_from_only, date_from_date = _parse_iso_datetime(date_from, end_of_day_for_date_only=False)
+        date_to_dt, date_to_only, date_to_date = _parse_iso_datetime(date_to, end_of_day_for_date_only=True)
     except ValueError:
         raise ValidationAppError("INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime")
 
     if date_from_dt > date_to_dt:
         raise ValidationAppError("INVALID_DATE_RANGE", "date_from must be before date_to")
 
-    delta_days = (date_to_dt.date() - date_from_dt.date()).days
+    if date_from_only and date_to_only and date_from_date and date_to_date:
+        delta_days = (date_to_date - date_from_date).days
+    else:
+        delta_days = (date_to_dt.date() - date_from_dt.date()).days
     if delta_days > settings.MAX_EXPORT_DATE_RANGE_DAYS:
         raise ValidationAppError(
             "DATE_RANGE_TOO_LARGE",

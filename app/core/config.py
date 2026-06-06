@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     # Audit
     MAX_EXPORT_DATE_RANGE_DAYS: int = 90
+    APP_TIMEZONE: str = "America/Guayaquil"
 
 
 settings = Settings()
