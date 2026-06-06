@@ -125,6 +125,8 @@ async def export_audit(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(_audit_roles),
 ):
+    local_tz = ZoneInfo(settings.APP_TIMEZONE)
+
     try:
         date_from_dt, date_from_only, date_from_date = _parse_iso_datetime(date_from, end_of_day_for_date_only=False)
         date_to_dt, date_to_only, date_to_date = _parse_iso_datetime(date_to, end_of_day_for_date_only=True)
@@ -154,10 +156,21 @@ async def export_audit(
 
     headers = ["ID", "Timestamp", "Usuario", "IP", "Acción", "Entidad", "ID Entidad", "Descripción"]
     rows = [
-        [log.id, log.timestamp.strftime("%Y-%m-%d %H:%M:%S"), log.username or "", log.ip_address or "", log.action.value, log.entity_type or "", log.entity_id or "", log.description or ""]
+        [
+            log.id,
+            log.timestamp.astimezone(local_tz).strftime("%Y-%m-%d %H:%M:%S"),
+            log.username or "",
+            log.ip_address or "",
+            log.action.value,
+            log.entity_type or "",
+            log.entity_id or "",
+            log.description or "",
+        ]
         for log in logs
     ]
-    title = f"Log de Auditoría — {date_from_dt.date()} a {date_to_dt.date()}"
+    title_from = date_from_date if date_from_only and date_from_date else date_from_dt.astimezone(local_tz).date()
+    title_to = date_to_date if date_to_only and date_to_date else date_to_dt.astimezone(local_tz).date()
+    title = f"Log de Auditoría — {title_from} a {title_to}"
     data = ExportService.to_excel(headers, rows, title, sheet_name="Auditoría")
     return Response(
         content=data,
