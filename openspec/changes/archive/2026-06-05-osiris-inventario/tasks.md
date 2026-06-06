@@ -157,5 +157,5 @@
 - [x] 14.1 Verificar que OpenAPI spec se genera correctamente en `/docs` con todos los endpoints documentados
 - [x] 14.2 Crear `README.md` con instrucciones de setup, variables de entorno requeridas y comandos de desarrollo
 - [x] 14.3 Crear `.env.example` con todas las variables de entorno necesarias
-- [ ] 14.4 Validar que `docker compose up` levanta el sistema completo correctamente
-- [ ] 14.5 Ejecutar suite de tests completa y confirmar que todos pasan
+- [x] 14.4 Validar que `docker compose up` levanta el sistema completo correctamente
+- [x] 14.5 Ejecutar suite de tests completa y confirmar que todos pasan

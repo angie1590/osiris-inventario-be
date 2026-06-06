@@ -1,7 +1,12 @@
 """Tests: company config CRUD, guards, and audit (company-config change)"""
+from datetime import date, timedelta
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+
+_TODAY = date.today().isoformat()
+_TOMORROW = (date.today() + timedelta(days=1)).isoformat()
 
 VALID_PAYLOAD = {
     "razon_social": "Acme S.A.",
@@ -19,7 +24,7 @@ VALID_PAYLOAD = {
 async def test_get_company_not_configured(client: AsyncClient, admin_token: str):
     resp = await client.get("/api/v1/company", headers={"Authorization": f"Bearer {admin_token}"})
     assert resp.status_code == 404
-    assert resp.json()["detail"]["code"] == "COMPANY_NOT_FOUND"
+    assert resp.json()["code"] == "COMPANY_NOT_FOUND"
 
 
 @pytest.mark.asyncio
@@ -58,7 +63,7 @@ async def test_create_company_duplicate_returns_409(client: AsyncClient, admin_t
     await client.post("/api/v1/company", json=VALID_PAYLOAD, headers={"Authorization": f"Bearer {admin_token}"})
     resp = await client.post("/api/v1/company", json=VALID_PAYLOAD, headers={"Authorization": f"Bearer {admin_token}"})
     assert resp.status_code == 409
-    assert resp.json()["detail"]["code"] == "COMPANY_ALREADY_EXISTS"
+    assert resp.json()["code"] == "COMPANY_ALREADY_EXISTS"
 
 
 @pytest.mark.asyncio
@@ -93,7 +98,7 @@ async def test_ingreso_blocked_without_company(client: AsyncClient, admin_token:
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "COMPANY_NOT_CONFIGURED"
+    assert resp.json()["code"] == "COMPANY_NOT_CONFIGURED"
 
 
 @pytest.mark.asyncio
@@ -107,17 +112,40 @@ async def test_report_blocked_without_company(client: AsyncClient, admin_token: 
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "COMPANY_NOT_CONFIGURED"
+    assert resp.json()["code"] == "COMPANY_NOT_CONFIGURED"
 
 
 # --- Audit ---
+
+@pytest.mark.asyncio
+async def test_create_company_missing_required_fields_returns_errors(client: AsyncClient, admin_token: str):
+    resp = await client.post("/api/v1/company", json={}, headers={"Authorization": f"Bearer {admin_token}"})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "errors" in body
+    assert "razon_social" in body["errors"] or "ruc" in body["errors"] or "email" in body["errors"]
+
+
+@pytest.mark.asyncio
+async def test_create_company_missing_ruc_returns_field_error(client: AsyncClient, admin_token: str):
+    resp = await client.post(
+        "/api/v1/company",
+        json={"razon_social": "Test", "email": "t@t.com"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "ruc" in body["errors"]
+
 
 @pytest.mark.asyncio
 async def test_audit_on_create(client: AsyncClient, admin_token: str):
     await client.post("/api/v1/company", json=VALID_PAYLOAD, headers={"Authorization": f"Bearer {admin_token}"})
     resp = await client.get(
         "/api/v1/audit",
-        params={"entity_type": "company_config", "action": "CREATE", "limit": 5},
+        params={"entity_type": "company_config", "action": "CREATE", "limit": 5, "date_from": _TODAY, "date_to": _TOMORROW},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 200
@@ -131,7 +159,7 @@ async def test_audit_on_update(client: AsyncClient, admin_token: str):
     await client.patch("/api/v1/company", json={"telefono": "0999999999"}, headers={"Authorization": f"Bearer {admin_token}"})
     resp = await client.get(
         "/api/v1/audit",
-        params={"entity_type": "company_config", "action": "UPDATE", "limit": 5},
+        params={"entity_type": "company_config", "action": "UPDATE", "limit": 5, "date_from": _TODAY, "date_to": _TOMORROW},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 200

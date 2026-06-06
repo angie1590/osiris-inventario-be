@@ -75,7 +75,7 @@ async def test_egreso_insufficient_stock(client: AsyncClient, admin_token: str, 
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "INSUFFICIENT_STOCK"
+    assert resp.json()["code"] == "INSUFFICIENT_STOCK"
 
 
 @pytest.mark.asyncio
@@ -86,7 +86,7 @@ async def test_ingreso_nonexistent_product(client: AsyncClient, operator_token: 
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "PRODUCT_NOT_FOUND"
+    assert resp.json()["code"] == "PRODUCT_NOT_FOUND"
 
 
 @pytest.mark.asyncio
@@ -154,7 +154,7 @@ async def test_baja_invalid_auth_code(client: AsyncClient, admin_token: str, ope
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "AUTHORIZATION_CODE_INVALID"
+    assert resp.json()["code"] == "AUTHORIZATION_CODE_INVALID"
 
 
 @pytest.mark.asyncio
@@ -171,4 +171,4 @@ async def test_immutable_approved_document(client: AsyncClient, admin_token: str
     # Try to cancel approved document
     cancel_resp = await client.post(f"/api/v1/inventory/bajas/{bi_id}/cancel", headers={"Authorization": f"Bearer {operator_token}"})
     assert cancel_resp.status_code == 409
-    assert cancel_resp.json()["detail"]["code"] == "DOCUMENT_IS_IMMUTABLE"
+    assert cancel_resp.json()["code"] == "DOCUMENT_IS_IMMUTABLE"

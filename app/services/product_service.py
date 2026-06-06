@@ -12,6 +12,16 @@ from app.services.audit_service import AuditService
 from app.services.category_service import _validate_attribute_value
 
 
+def _validate_stock_quantity(value: Decimal, mode: str, field_name: str = "stock_min") -> None:
+    """Raise ValidationAppError if decimal value is provided in integer mode."""
+    if mode == "integer" and value != value.to_integral_value():
+        raise ValidationAppError(
+            "INVALID_QUANTITY",
+            f"El {field_name} debe ser un número entero.",
+            field_errors={field_name: f"El {field_name} debe ser un número entero."},
+        )
+
+
 class ProductService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -46,11 +56,12 @@ class ProductService:
         products = await self.repo.list(limit=limit, cursor=cursor, name=name, category_ids=category_ids, status=status, bajo_stock=bajo_stock)
         return products
 
-    async def create_product(self, name: str, description: str | None, category_id: int, stock_minimo: Decimal, pvp: Decimal, custom_attributes: dict | None, actor_id: int, actor_name: str, request=None) -> Product:
+    async def create_product(self, name: str, description: str | None, category_id: int, stock_minimo: Decimal, pvp: Decimal, custom_attributes: dict | None, actor_id: int, actor_name: str, request=None, stock_mode: str = "integer") -> Product:
         cat = await self.cat_repo.get_by_id(category_id)
         if not cat or not cat.is_active:
             raise NotFoundError("CATEGORY_NOT_FOUND", "Category not found or inactive")
 
+        _validate_stock_quantity(stock_minimo, stock_mode, "stock_minimo")
         await self._validate_custom_attributes(category_id, custom_attributes)
 
         product = Product(
@@ -77,11 +88,13 @@ class ProductService:
             raise NotFoundError("PRODUCT_NOT_FOUND", "Product not found")
         return p
 
-    async def update_product(self, product_id: int, name: str | None, description: str | None, stock_minimo: Decimal | None, pvp: Decimal | None, custom_attributes: dict | None, actor_id: int, actor_name: str, request=None) -> Product:
+    async def update_product(self, product_id: int, name: str | None, description: str | None, stock_minimo: Decimal | None, pvp: Decimal | None, custom_attributes: dict | None, actor_id: int, actor_name: str, request=None, stock_mode: str = "integer") -> Product:
         p = await self.repo.get_by_id(product_id)
         if not p:
             raise NotFoundError("PRODUCT_NOT_FOUND", "Product not found")
 
+        if stock_minimo is not None:
+            _validate_stock_quantity(stock_minimo, stock_mode, "stock_minimo")
         if custom_attributes is not None:
             await self._validate_custom_attributes(p.category_id, custom_attributes)
 

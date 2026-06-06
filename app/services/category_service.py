@@ -132,7 +132,7 @@ class CategoryService:
         await self.db.refresh(attr)
         return attr
 
-    async def update_attribute(self, category_id: int, attr_id: int, name: str | None, is_required: bool | None, select_options: list[str] | None, actor_id: int, actor_name: str, request=None) -> CategoryAttribute:
+    async def update_attribute(self, category_id: int, attr_id: int, name: str | None, data_type: "AttributeDataType | None", is_required: bool | None, select_options: list[str] | None, actor_id: int, actor_name: str, request=None) -> CategoryAttribute:
         attr = await self.repo.get_attribute_by_id(attr_id)
         if not attr or attr.category_id != category_id:
             raise NotFoundError("ATTRIBUTE_NOT_FOUND", "Attribute not found in this category")
@@ -140,9 +140,19 @@ class CategoryService:
         if name and await self.repo.attribute_name_exists_in_hierarchy(category_id, name, exclude_id=attr_id):
             raise ConflictError("DUPLICATE_ATTRIBUTE_IN_HIERARCHY", f"Attribute '{name}' already exists in the hierarchy")
 
-        previous = {"name": attr.name, "is_required": attr.is_required}
+        if data_type is not None and data_type != attr.data_type:
+            has_values = await self.repo.attribute_has_product_values(attr_id)
+            if has_values:
+                raise ConflictError(
+                    "ATTRIBUTE_TYPE_CHANGE_BLOCKED",
+                    f"Cannot change data_type: attribute '{attr.name}' has existing product values",
+                )
+
+        previous = {"name": attr.name, "is_required": attr.is_required, "data_type": attr.data_type.value}
         if name is not None:
             attr.name = name
+        if data_type is not None:
+            attr.data_type = data_type
         if is_required is not None:
             attr.is_required = is_required
         if select_options is not None:
@@ -151,7 +161,39 @@ class CategoryService:
         await self.audit.log(
             AuditAction.UPDATE, user_id=actor_id, username=actor_name,
             entity_type="category_attribute", entity_id=attr.id,
-            previous=previous, new={"name": attr.name, "is_required": attr.is_required},
+            previous=previous, new={"name": attr.name, "is_required": attr.is_required, "data_type": attr.data_type.value},
+            request=request,
+        )
+        await self.db.commit()
+        await self.db.refresh(attr)
+        return attr
+
+    async def deactivate_attribute(self, category_id: int, attr_id: int, actor_id: int, actor_name: str, request=None) -> CategoryAttribute:
+        attr = await self.repo.get_attribute_by_id(attr_id)
+        if not attr or attr.category_id != category_id:
+            raise NotFoundError("ATTRIBUTE_NOT_FOUND", "Attribute not found in this category")
+
+        attr.is_active = False
+        await self.audit.log(
+            AuditAction.UPDATE, user_id=actor_id, username=actor_name,
+            entity_type="category_attribute", entity_id=attr.id,
+            previous={"is_active": True}, new={"is_active": False},
+            request=request,
+        )
+        await self.db.commit()
+        await self.db.refresh(attr)
+        return attr
+
+    async def reactivate_attribute(self, category_id: int, attr_id: int, actor_id: int, actor_name: str, request=None) -> CategoryAttribute:
+        attr = await self.repo.get_attribute_by_id(attr_id)
+        if not attr or attr.category_id != category_id:
+            raise NotFoundError("ATTRIBUTE_NOT_FOUND", "Attribute not found in this category")
+
+        attr.is_active = True
+        await self.audit.log(
+            AuditAction.UPDATE, user_id=actor_id, username=actor_name,
+            entity_type="category_attribute", entity_id=attr.id,
+            previous={"is_active": False}, new={"is_active": True},
             request=request,
         )
         await self.db.commit()
@@ -162,6 +204,13 @@ class CategoryService:
         attr = await self.repo.get_attribute_by_id(attr_id)
         if not attr or attr.category_id != category_id:
             raise NotFoundError("ATTRIBUTE_NOT_FOUND", "Attribute not found in this category")
+
+        has_values = await self.repo.attribute_has_product_values(attr_id)
+        if has_values:
+            raise ConflictError(
+                "ATTRIBUTE_IN_USE",
+                f"Cannot delete attribute '{attr.name}': it has product values. Deactivate it instead.",
+            )
 
         await self.db.delete(attr)
         await self.audit.log(

@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -38,6 +39,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+from app.core.exceptions import AppError  # noqa: E402
+
+
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError):
+    return JSONResponse(status_code=exc.status_code, content=exc.detail)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    field_errors: dict[str, str] = {}
+    for error in exc.errors():
+        loc = error.get("loc", [])
+        field = str(loc[-1]) if len(loc) > 1 else "body"
+        field_errors[field] = error.get("msg", "Invalid value")
+    return JSONResponse(
+        status_code=422,
+        content={"code": "VALIDATION_ERROR", "message": "Los datos enviados no son válidos.", "errors": field_errors},
+    )
 
 
 @app.exception_handler(Exception)

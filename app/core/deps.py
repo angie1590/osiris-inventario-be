@@ -76,3 +76,12 @@ async def require_company_configured(db: AsyncSession = Depends(get_db)) -> None
     company = await CompanyRepository(db).get()
     if not company or not (company.razon_social and company.ruc and company.email):
         raise ValidationAppError("COMPANY_NOT_CONFIGURED", "Company configuration is incomplete")
+
+
+async def get_stock_mode(db: AsyncSession = Depends(get_db)) -> str:
+    """Return 'integer' or 'decimal' based on the stock_quantity_mode system param."""
+    from sqlalchemy import select
+    from app.models.system_param import SystemParam
+    result = await db.execute(select(SystemParam).where(SystemParam.key == "stock_quantity_mode"))
+    param = result.scalar_one_or_none()
+    return param.value if param else "integer"

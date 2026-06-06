@@ -2,8 +2,11 @@ from fastapi import HTTPException, status
 
 
 class AppError(HTTPException):
-    def __init__(self, code: str, detail: str, status_code: int = status.HTTP_400_BAD_REQUEST):
-        super().__init__(status_code=status_code, detail={"code": code, "message": detail})
+    def __init__(self, code: str, detail: str, status_code: int = status.HTTP_400_BAD_REQUEST, field_errors: dict[str, str] | None = None):
+        body: dict = {"code": code, "message": detail}
+        if field_errors:
+            body["errors"] = field_errors
+        super().__init__(status_code=status_code, detail=body)
 
 
 class NotFoundError(AppError):
@@ -27,5 +30,5 @@ class UnauthorizedError(AppError):
 
 
 class ValidationAppError(AppError):
-    def __init__(self, code: str = "VALIDATION_ERROR", detail: str = "Validation error"):
-        super().__init__(code=code, detail=detail, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    def __init__(self, code: str = "VALIDATION_ERROR", detail: str = "Validation error", field_errors: dict[str, str] | None = None):
+        super().__init__(code=code, detail=detail, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, field_errors=field_errors)

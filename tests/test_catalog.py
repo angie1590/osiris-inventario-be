@@ -38,7 +38,7 @@ async def test_delete_category_with_children_fails(client: AsyncClient, admin_to
 
     resp = await client.delete(f"/api/v1/categories/{parent_id}", headers={"Authorization": f"Bearer {admin_token}"})
     assert resp.status_code == 409
-    assert resp.json()["detail"]["code"] == "CATEGORY_HAS_CHILDREN"
+    assert resp.json()["code"] == "CATEGORY_HAS_CHILDREN"
 
 
 @pytest.mark.asyncio
@@ -76,7 +76,7 @@ async def test_duplicate_attribute_in_hierarchy_fails(client: AsyncClient, admin
 
     resp = await client.post(f"/api/v1/categories/{child_id}/attributes", json={"name": "color", "data_type": "text"}, headers={"Authorization": f"Bearer {admin_token}"})
     assert resp.status_code == 409
-    assert resp.json()["detail"]["code"] == "DUPLICATE_ATTRIBUTE_IN_HIERARCHY"
+    assert resp.json()["code"] == "DUPLICATE_ATTRIBUTE_IN_HIERARCHY"
 
 
 @pytest.mark.asyncio
@@ -107,3 +107,131 @@ async def test_create_product_with_required_attribute(client: AsyncClient, admin
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_attribute_type_change_blocked_when_values_exist(client: AsyncClient, admin_token: str, operator_token: str):
+    cat = await client.post("/api/v1/categories", json={"name": "TypeChange Cat"}, headers={"Authorization": f"Bearer {admin_token}"})
+    cat_id = cat.json()["id"]
+    attr_resp = await client.post(
+        f"/api/v1/categories/{cat_id}/attributes",
+        json={"name": "color", "data_type": "text"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    attr_id = attr_resp.json()["id"]
+
+    # Create a product with a value for this attribute
+    await client.post(
+        "/api/v1/products",
+        json={"name": "Colored Product", "category_id": cat_id, "pvp": "5.00", "custom_attributes": {"color": "red"}},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    # Attempt to change the data_type — should be blocked
+    resp = await client.patch(
+        f"/api/v1/categories/{cat_id}/attributes/{attr_id}",
+        json={"data_type": "integer"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "ATTRIBUTE_TYPE_CHANGE_BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_deactivate_attribute_preserves_product_values(client: AsyncClient, admin_token: str, operator_token: str):
+    cat = await client.post("/api/v1/categories", json={"name": "Deactivate Cat"}, headers={"Authorization": f"Bearer {admin_token}"})
+    cat_id = cat.json()["id"]
+    attr_resp = await client.post(
+        f"/api/v1/categories/{cat_id}/attributes",
+        json={"name": "size", "data_type": "text"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    attr_id = attr_resp.json()["id"]
+
+    # Create product with value
+    prod_resp = await client.post(
+        "/api/v1/products",
+        json={"name": "Sized Product", "category_id": cat_id, "pvp": "5.00", "custom_attributes": {"size": "M"}},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    prod_id = prod_resp.json()["id"]
+
+    # Deactivate the attribute
+    deact = await client.post(
+        f"/api/v1/categories/{cat_id}/attributes/{attr_id}/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert deact.status_code == 200
+    assert deact.json()["is_active"] is False
+
+    # Product still has its value
+    prod = await client.get(f"/api/v1/products/{prod_id}", headers={"Authorization": f"Bearer {operator_token}"})
+    assert prod.json()["custom_attributes"]["size"] == "M"
+
+
+@pytest.mark.asyncio
+async def test_delete_attribute_blocked_when_in_use(client: AsyncClient, admin_token: str, operator_token: str):
+    cat = await client.post("/api/v1/categories", json={"name": "Delete Blocked Cat"}, headers={"Authorization": f"Bearer {admin_token}"})
+    cat_id = cat.json()["id"]
+    attr_resp = await client.post(
+        f"/api/v1/categories/{cat_id}/attributes",
+        json={"name": "weight", "data_type": "decimal"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    attr_id = attr_resp.json()["id"]
+
+    # Create product with value
+    await client.post(
+        "/api/v1/products",
+        json={"name": "Heavy Product", "category_id": cat_id, "pvp": "5.00", "custom_attributes": {"weight": "1.5"}},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    # Delete should fail
+    resp = await client.delete(
+        f"/api/v1/categories/{cat_id}/attributes/{attr_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "ATTRIBUTE_IN_USE"
+
+
+@pytest.mark.asyncio
+async def test_decimal_stock_min_rejected_in_integer_mode(client: AsyncClient, admin_token: str, operator_token: str, stock_mode_integer):
+    cat = await client.post("/api/v1/categories", json={"name": "StockMode Cat"}, headers={"Authorization": f"Bearer {admin_token}"})
+    cat_id = cat.json()["id"]
+
+    resp = await client.post(
+        "/api/v1/products",
+        json={"name": "Decimal StockMin Product", "category_id": cat_id, "pvp": "5.00", "stock_minimo": "1.5"},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "INVALID_QUANTITY"
+
+
+@pytest.mark.asyncio
+async def test_decimal_stock_min_accepted_in_decimal_mode(client: AsyncClient, admin_token: str, operator_token: str, stock_mode_decimal):
+    cat = await client.post("/api/v1/categories", json={"name": "DecimalMode Cat"}, headers={"Authorization": f"Bearer {admin_token}"})
+    cat_id = cat.json()["id"]
+
+    resp = await client.post(
+        "/api/v1/products",
+        json={"name": "Decimal StockMin OK", "category_id": cat_id, "pvp": "5.00", "stock_minimo": "1.5"},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 201
+    assert float(resp.json()["stock_minimo"]) == 1.5
+
+
+@pytest.mark.asyncio
+async def test_integer_stock_min_accepted_in_integer_mode(client: AsyncClient, admin_token: str, operator_token: str, stock_mode_integer):
+    cat = await client.post("/api/v1/categories", json={"name": "IntMode Cat"}, headers={"Authorization": f"Bearer {admin_token}"})
+    cat_id = cat.json()["id"]
+
+    resp = await client.post(
+        "/api/v1/products",
+        json={"name": "Integer StockMin OK", "category_id": cat_id, "pvp": "5.00", "stock_minimo": "5"},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 201

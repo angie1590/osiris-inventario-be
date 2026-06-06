@@ -93,6 +93,7 @@ async def get_category_attributes(
             data_type=item["attr"].data_type,
             is_required=item["attr"].is_required,
             select_options=item["attr"].select_options,
+            is_active=item["attr"].is_active,
             inherited=item["inherited"],
         )
         for item in items
@@ -112,7 +113,7 @@ async def add_attribute(
     return CategoryAttributeResponse(
         id=attr.id, category_id=attr.category_id, name=attr.name,
         data_type=attr.data_type, is_required=attr.is_required,
-        select_options=attr.select_options, inherited=False,
+        select_options=attr.select_options, is_active=attr.is_active, inherited=False,
     )
 
 
@@ -126,11 +127,45 @@ async def update_attribute(
     current_user: User = Depends(require_role(UserRole.admin)),
 ):
     svc = CategoryService(db)
-    attr = await svc.update_attribute(category_id, attr_id, body.name, body.is_required, body.select_options, current_user.id, current_user.username, request)
+    attr = await svc.update_attribute(category_id, attr_id, body.name, body.data_type, body.is_required, body.select_options, current_user.id, current_user.username, request)
     return CategoryAttributeResponse(
         id=attr.id, category_id=attr.category_id, name=attr.name,
         data_type=attr.data_type, is_required=attr.is_required,
-        select_options=attr.select_options, inherited=False,
+        select_options=attr.select_options, is_active=attr.is_active, inherited=False,
+    )
+
+
+@router.post("/{category_id}/attributes/{attr_id}/deactivate", response_model=CategoryAttributeResponse)
+async def deactivate_attribute(
+    category_id: int,
+    attr_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.admin)),
+):
+    svc = CategoryService(db)
+    attr = await svc.deactivate_attribute(category_id, attr_id, current_user.id, current_user.username, request)
+    return CategoryAttributeResponse(
+        id=attr.id, category_id=attr.category_id, name=attr.name,
+        data_type=attr.data_type, is_required=attr.is_required,
+        select_options=attr.select_options, is_active=attr.is_active, inherited=False,
+    )
+
+
+@router.post("/{category_id}/attributes/{attr_id}/reactivate", response_model=CategoryAttributeResponse)
+async def reactivate_attribute(
+    category_id: int,
+    attr_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.admin)),
+):
+    svc = CategoryService(db)
+    attr = await svc.reactivate_attribute(category_id, attr_id, current_user.id, current_user.username, request)
+    return CategoryAttributeResponse(
+        id=attr.id, category_id=attr.category_id, name=attr.name,
+        data_type=attr.data_type, is_required=attr.is_required,
+        select_options=attr.select_options, is_active=attr.is_active, inherited=False,
     )
 
 

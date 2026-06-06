@@ -34,6 +34,7 @@ class CategoryAttribute(Base):
     data_type: Mapped[AttributeDataType] = mapped_column(Enum(AttributeDataType), nullable=False)
     is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     select_options: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     category: Mapped["Category"] = relationship(back_populates="attributes")

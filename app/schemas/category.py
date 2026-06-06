@@ -22,6 +22,7 @@ class CategoryAttributeCreate(BaseModel):
 
 class CategoryAttributeUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
+    data_type: AttributeDataType | None = None
     is_required: bool | None = None
     select_options: list[str] | None = None
 
@@ -33,6 +34,7 @@ class CategoryAttributeResponse(BaseModel):
     data_type: AttributeDataType
     is_required: bool
     select_options: list[str] | None
+    is_active: bool = True
     inherited: bool = False
 
     model_config = ConfigDict(from_attributes=True)

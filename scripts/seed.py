@@ -26,6 +26,7 @@ INITIAL_PARAMS = [
     ("doc_number_prefix", "OSR", "Prefijo para la numeración de documentos transaccionales"),
     ("doc_number_padding", "6", "Cantidad de dígitos en la numeración de documentos"),
     ("report_include_logo", "true", "Incluir logo de empresa en exportaciones PDF"),
+    ("stock_quantity_mode", "integer", "Modo de cantidades de stock: 'integer' (enteros) o 'decimal' (decimales)"),
 ]
 
 

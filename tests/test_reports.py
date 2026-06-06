@@ -94,7 +94,7 @@ async def test_report_ingresos_inverted_dates(client: AsyncClient, admin_token: 
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "INVALID_DATE_RANGE"
+    assert resp.json()["code"] == "INVALID_DATE_RANGE"
 
 
 @pytest.mark.asyncio

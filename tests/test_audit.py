@@ -54,7 +54,7 @@ async def test_audit_export_range_too_large(client: AsyncClient, admin_token: st
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "DATE_RANGE_TOO_LARGE"
+    assert resp.json()["code"] == "DATE_RANGE_TOO_LARGE"
 
 
 @pytest.mark.asyncio

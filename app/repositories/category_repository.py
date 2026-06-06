@@ -62,7 +62,10 @@ class CategoryRepository:
 
         for cat_id in hierarchy_ids:
             result = await self.db.execute(
-                select(CategoryAttribute).where(CategoryAttribute.category_id == cat_id)
+                select(CategoryAttribute).where(
+                    CategoryAttribute.category_id == cat_id,
+                    CategoryAttribute.is_active == True,
+                )
             )
             for attr in result.scalars().all():
                 if attr.name.lower() not in seen_names:
@@ -95,3 +98,24 @@ class CategoryRepository:
     async def get_attribute_by_id(self, attr_id: int) -> CategoryAttribute | None:
         result = await self.db.execute(select(CategoryAttribute).where(CategoryAttribute.id == attr_id))
         return result.scalar_one_or_none()
+
+    async def attribute_has_product_values(self, attr_id: int) -> bool:
+        from app.models.product import Product
+        attr = await self.get_attribute_by_id(attr_id)
+        if not attr:
+            return False
+        result = await self.db.execute(
+            select(Product.id).where(
+                Product.custom_attributes.has_key(attr.name)  # type: ignore[attr-defined]
+            ).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def get_active_attributes(self, category_id: int) -> list[CategoryAttribute]:
+        result = await self.db.execute(
+            select(CategoryAttribute).where(
+                CategoryAttribute.category_id == category_id,
+                CategoryAttribute.is_active == True,
+            )
+        )
+        return list(result.scalars().all())

@@ -25,7 +25,7 @@ async def test_login_wrong_password(client: AsyncClient, db_session: AsyncSessio
 
     resp = await client.post("/api/v1/auth/login", data={"username": "wrong_pass_user", "password": "wrong"})
     assert resp.status_code == 401
-    assert resp.json()["detail"]["code"] == "INVALID_CREDENTIALS"
+    assert resp.json()["code"] == "INVALID_CREDENTIALS"
 
 
 @pytest.mark.asyncio
@@ -33,7 +33,7 @@ async def test_login_unknown_user(client: AsyncClient):
     resp = await client.post("/api/v1/auth/login", data={"username": "nonexistent", "password": "whatever"})
     assert resp.status_code == 401
     # Same message as wrong password (no user enumeration)
-    assert resp.json()["detail"]["code"] == "INVALID_CREDENTIALS"
+    assert resp.json()["code"] == "INVALID_CREDENTIALS"
 
 
 @pytest.mark.asyncio

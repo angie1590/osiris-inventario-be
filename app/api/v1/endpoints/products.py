@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import require_role
+from app.core.deps import get_stock_mode, require_role
 from app.models.enums import UserRole
 from app.models.user import User
 from app.schemas.product import ProductCreate, ProductResponse, ProductStatusUpdate, ProductUpdate
@@ -42,9 +42,10 @@ async def create_product(
     request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(_write_roles),
+    stock_mode: str = Depends(get_stock_mode),
 ):
     svc = ProductService(db)
-    p = await svc.create_product(body.name, body.description, body.category_id, body.stock_minimo, body.pvp, body.custom_attributes, current_user.id, current_user.username, request)
+    p = await svc.create_product(body.name, body.description, body.category_id, body.stock_minimo, body.pvp, body.custom_attributes, current_user.id, current_user.username, request, stock_mode=stock_mode)
     return _to_response(p)
 
 
@@ -66,9 +67,10 @@ async def update_product(
     request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(_write_roles),
+    stock_mode: str = Depends(get_stock_mode),
 ):
     svc = ProductService(db)
-    p = await svc.update_product(product_id, body.name, body.description, body.stock_minimo, body.pvp, body.custom_attributes, current_user.id, current_user.username, request)
+    p = await svc.update_product(product_id, body.name, body.description, body.stock_minimo, body.pvp, body.custom_attributes, current_user.id, current_user.username, request, stock_mode=stock_mode)
     return _to_response(p)
 
 

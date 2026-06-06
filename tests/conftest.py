@@ -162,6 +162,24 @@ async def supervisor_token(client: AsyncClient, db_session: AsyncSession) -> str
 
 
 @pytest_asyncio.fixture
+async def stock_mode_integer(db_session: AsyncSession):
+    from app.models.system_param import SystemParam
+    param = SystemParam(key="stock_quantity_mode", value="integer", description="test")
+    db_session.add(param)
+    await db_session.commit()
+    return param
+
+
+@pytest_asyncio.fixture
+async def stock_mode_decimal(db_session: AsyncSession):
+    from app.models.system_param import SystemParam
+    param = SystemParam(key="stock_quantity_mode", value="decimal", description="test")
+    db_session.add(param)
+    await db_session.commit()
+    return param
+
+
+@pytest_asyncio.fixture
 async def company_config(db_session: AsyncSession):
     """Create a complete company config so require_company_configured passes."""
     from app.models.company_config import CompanyConfig
