@@ -3,12 +3,14 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import require_role
 from app.core.exceptions import ValidationAppError
 from app.models.enums import AuditAction, UserRole
+from app.models.user import User as AppUser
 from app.models.user import User
 from app.repositories.audit_repository import AuditRepository
 from app.utils.export_service import ExportService
@@ -16,6 +18,34 @@ from app.utils.export_service import ExportService
 router = APIRouter()
 
 _audit_roles = require_role(UserRole.admin, UserRole.supervisor)
+
+
+@router.get("/users")
+async def list_audit_users(
+    search: str | None = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_audit_roles),
+):
+    q = select(AppUser.id, AppUser.username, AppUser.full_name).order_by(AppUser.full_name, AppUser.username)
+    if search:
+        term = f"%{search.strip()}%"
+        q = q.where(
+            or_(
+                AppUser.username.ilike(term),
+                AppUser.full_name.ilike(term),
+            )
+        )
+    q = q.limit(limit)
+    rows = (await db.execute(q)).all()
+    return [
+        {
+            "id": row.id,
+            "username": row.username,
+            "full_name": row.full_name,
+        }
+        for row in rows
+    ]
 
 
 @router.get("")
