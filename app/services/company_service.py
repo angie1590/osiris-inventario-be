@@ -16,6 +16,7 @@ def _is_complete(company: CompanyConfig) -> bool:
 
 class CompanyService:
     def __init__(self, db: AsyncSession):
+        self.db = db
         self.repo = CompanyRepository(db)
         self.audit = AuditService(db)
 
@@ -48,6 +49,8 @@ class CompanyService:
             new=payload.model_dump(exclude={"logo"}),
             request=request,
         )
+        await self.db.commit()
+        await self.db.refresh(company)
         return company
 
     async def update(self, payload: CompanyConfigUpdate, user: User, request: Request) -> CompanyConfig:
@@ -79,4 +82,6 @@ class CompanyService:
             new={k: v for k, v in changes.items() if k not in ("logo", "updated_by")},
             request=request,
         )
+        await self.db.commit()
+        await self.db.refresh(company)
         return company

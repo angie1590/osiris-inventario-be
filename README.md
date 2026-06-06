@@ -95,8 +95,12 @@ alembic upgrade head
 # Revertir última migración
 alembic downgrade -1
 
-# Ejecutar tests (requiere PostgreSQL de test)
-TEST_DATABASE_URL=postgresql+asyncpg://osiris:pass@localhost:5432/osiris_test pytest
+# Ejecutar tests — usan una base dedicada (osiris_inventario_test), creada
+# automáticamente. NUNCA tocan la base de desarrollo.
+docker compose run --rm api pytest
+
+# Apuntar a otra base de test (opcional)
+TEST_DATABASE_URL=postgresql+asyncpg://osiris:pass@localhost:5432/mi_test pytest
 
 # Ejecutar tests con cobertura
 pytest --cov=app --cov-report=html

@@ -4,6 +4,7 @@ from typing import AsyncGenerator
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -11,17 +12,55 @@ from app.core.database import Base, get_db
 from app.core.redis import close_redis
 from app.main import app
 
+# Tests run against a DEDICATED database — never the dev one — because the
+# setup fixture drops all tables before each test. The default points at
+# `osiris_inventario_test`; it is created automatically if it does not exist.
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://osiris:osiris_dev_pass@postgres:5432/osiris_inventario",
+    "postgresql+asyncpg://osiris:osiris_dev_pass@postgres:5432/osiris_inventario_test",
 )
 
 test_engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
 TestSessionLocal = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
+_test_db_ready = False
+
+
+async def _ensure_test_database() -> None:
+    """Create the dedicated test database if it does not exist yet.
+
+    Connects to the `postgres` maintenance database to run CREATE DATABASE
+    (which cannot run inside a transaction, hence AUTOCOMMIT). Runs only once
+    per session via the module-level guard.
+    """
+    global _test_db_ready
+    if _test_db_ready:
+        return
+
+    url = make_url(TEST_DATABASE_URL)
+    db_name = url.database
+    admin_engine = create_async_engine(
+        url.set(database="postgres"),
+        isolation_level="AUTOCOMMIT",
+        poolclass=NullPool,
+    )
+    try:
+        async with admin_engine.connect() as conn:
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": db_name},
+            )
+            if not exists:
+                await conn.execute(text(f'CREATE DATABASE "{db_name}"'))
+    finally:
+        await admin_engine.dispose()
+
+    _test_db_ready = True
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def setup_db():
+    await _ensure_test_database()
     await close_redis()
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)

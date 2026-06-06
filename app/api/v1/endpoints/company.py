@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import require_admin, require_any_role
+from app.core.exceptions import NotFoundError
 from app.models.company_config import CompanyConfig
 from app.models.user import User
 from app.schemas.company import CompanyConfigCreate, CompanyConfigResponse, CompanyConfigUpdate
@@ -28,7 +29,7 @@ def _to_response(company: CompanyConfig) -> CompanyConfigResponse:
     )
 
 
-@router.get("", response_model=CompanyConfigResponse | None)
+@router.get("", response_model=CompanyConfigResponse)
 async def get_company(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_any_role),
@@ -36,7 +37,7 @@ async def get_company(
     svc = CompanyService(db)
     company = await svc.get_or_none()
     if not company:
-        return None
+        raise NotFoundError("COMPANY_NOT_FOUND", "Company configuration not found")
     return _to_response(company)
 
 

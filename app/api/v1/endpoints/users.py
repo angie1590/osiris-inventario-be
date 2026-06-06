@@ -44,7 +44,7 @@ async def create_user(
         hashed_password=hash_password(body.password),
         full_name=body.full_name,
         role=body.role,
-        is_active=True,
+        is_active=body.is_active,
         must_change_password=True,
     )
     user = await repo.create(new_user)
@@ -91,13 +91,20 @@ async def update_user(
     if not user:
         raise NotFoundError("USER_NOT_FOUND", "User not found")
 
-    previous = {"role": user.role.value, "is_active": user.is_active, "full_name": user.full_name}
+    previous = {
+        "role": user.role.value,
+        "is_active": user.is_active,
+        "full_name": user.full_name,
+        "must_change_password": user.must_change_password,
+    }
     if body.full_name is not None:
         user.full_name = body.full_name
     if body.role is not None:
         user.role = body.role
     if body.is_active is not None:
         user.is_active = body.is_active
+    if body.require_password_change is not None:
+        user.must_change_password = body.require_password_change
 
     audit = AuditService(db)
     await audit.log(
@@ -107,7 +114,12 @@ async def update_user(
         entity_type="user",
         entity_id=user.id,
         previous=previous,
-        new={"role": user.role.value, "is_active": user.is_active, "full_name": user.full_name},
+        new={
+            "role": user.role.value,
+            "is_active": user.is_active,
+            "full_name": user.full_name,
+            "must_change_password": user.must_change_password,
+        },
         description=f"User '{user.username}' updated",
         request=request,
     )
