@@ -61,13 +61,17 @@ async def update_param(
     if not param:
         raise NotFoundError("PARAM_NOT_FOUND", f"Parameter '{key}' not found")
 
+    normalized_value = body.value.strip()
+    if not normalized_value:
+        raise ValidationAppError("EMPTY_PARAM_VALUE", f"Parameter '{key}' cannot be empty")
+
     if key in _numeric_params:
-        if not body.value.isdigit():
+        if not normalized_value.isdigit():
             raise ValidationAppError("INVALID_PARAM_VALUE", f"Parameter '{key}' must be an integer")
 
     # Special validation for kardex_method change
     if key == "kardex_method":
-        new_method = body.value.upper()
+        new_method = normalized_value.upper()
         if new_method not in ("PEPS", "WEIGHTED_AVERAGE"):
             from app.core.exceptions import ValidationAppError
             raise ValidationAppError("INVALID_KARDEX_METHOD", "Method must be PEPS or WEIGHTED_AVERAGE")
@@ -81,14 +85,14 @@ async def update_param(
             raise ConflictError("KARDEX_METHOD_LOCKED", "Cannot change kardex method with movements in the current fiscal year")
 
     previous = {"value": param.value}
-    param.value = body.value
+    param.value = normalized_value
     param.updated_by = current_user.id
 
     audit = AuditService(db)
     await audit.log(
         AuditAction.UPDATE, user_id=current_user.id, username=current_user.username,
         entity_type="system_param", entity_id=key,
-        previous=previous, new={"value": body.value},
+        previous=previous, new={"value": normalized_value},
         description=f"Parameter '{key}' updated",
         request=request,
     )
