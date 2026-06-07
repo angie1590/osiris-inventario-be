@@ -1,4 +1,5 @@
 import hashlib
+import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Request
@@ -33,7 +34,9 @@ class AuthService:
         self.audit = AuditService(db)
 
     async def _get_session_timeout_minutes(self) -> int:
-        result = await self.db.execute(select(SystemParam).where(SystemParam.key == "session_timeout_minutes"))
+        result = await self.db.execute(
+            select(SystemParam).where(SystemParam.key == "session_timeout_minutes")
+        )
         param = result.scalar_one_or_none()
         default_value = settings.ACCESS_TOKEN_EXPIRE_MINUTES
         if not param:
@@ -44,7 +47,9 @@ class AuthService:
             return default_value
         return value if value > 0 else default_value
 
-    async def login(self, username: str, password: str, request: Request | None = None) -> dict:
+    async def login(
+        self, username: str, password: str, request: Request | None = None
+    ) -> dict:
         user = await self.user_repo.get_by_username(username)
 
         if not user or not verify_password(password, user.hashed_password):
@@ -83,7 +88,8 @@ class AuthService:
         rt = RefreshToken(
             user_id=user.id,
             token_hash=_hash_token(refresh_token_str),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
             ip_address=request.client.host if request and request.client else None,
         )
         await self.user_repo.save_refresh_token(rt)
@@ -118,7 +124,9 @@ class AuthService:
         rt = await self.user_repo.get_refresh_token_by_hash(token_hash)
 
         if not rt:
-            raise UnauthorizedError("TOKEN_REVOKED", "Refresh token is invalid or revoked")
+            raise UnauthorizedError(
+                "TOKEN_REVOKED", "Refresh token is invalid or revoked"
+            )
 
         if rt.expires_at < datetime.now(timezone.utc):
             raise UnauthorizedError("TOKEN_EXPIRED", "Refresh token has expired")
@@ -133,7 +141,8 @@ class AuthService:
         new_rt = RefreshToken(
             user_id=user.id,
             token_hash=_hash_token(new_refresh),
-            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
         )
         await self.user_repo.save_refresh_token(new_rt)
 
@@ -153,7 +162,9 @@ class AuthService:
             "session_timeout_minutes": session_timeout_minutes,
         }
 
-    async def logout(self, user: User, access_token: str, request: Request | None = None) -> None:
+    async def logout(
+        self, user: User, access_token: str, request: Request | None = None
+    ) -> None:
         # Blacklist access token in Redis
         redis = await get_redis()
         await redis.setex(
@@ -176,17 +187,28 @@ class AuthService:
         await self.db.commit()
 
     async def change_password(
-        self, user: User, current_password: str, new_password: str, access_token: str, request: Request | None = None
+        self,
+        user: User,
+        current_password: str,
+        new_password: str,
+        access_token: str,
+        request: Request | None = None,
     ) -> None:
         if not verify_password(current_password, user.hashed_password):
-            raise ValidationAppError("INVALID_CURRENT_PASSWORD", "Current password is incorrect")
+            raise ValidationAppError(
+                "INVALID_CURRENT_PASSWORD", "Current password is incorrect"
+            )
 
         user.hashed_password = hash_password(new_password)
         user.must_change_password = False
 
         # Invalidate all sessions
         redis = await get_redis()
-        await redis.setex(f"blacklist:{access_token}", settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60 + 60, "1")
+        await redis.setex(
+            f"blacklist:{access_token}",
+            settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60 + 60,
+            "1",
+        )
         await self.user_repo.revoke_all_refresh_tokens(user.id)
 
         await self.audit.log(
@@ -196,6 +218,58 @@ class AuthService:
             entity_type="user",
             entity_id=user.id,
             description="Contraseña actualizada",
+            request=request,
+        )
+        await self.db.commit()
+
+    async def set_approval_code(
+        self, user: User, approval_code: str, request: Request | None = None
+    ) -> None:
+        if user.role.value not in ("admin", "supervisor"):
+            raise ValidationAppError(
+                "APPROVAL_CODE_ROLE_NOT_ALLOWED",
+                "Only admin or supervisor users can configure an approval code",
+            )
+
+        normalized = approval_code.strip().upper()
+        if not re.fullmatch(r"[A-F0-9]{8}", normalized):
+            raise ValidationAppError(
+                "INVALID_APPROVAL_CODE_FORMAT",
+                "Approval code must be 8 hexadecimal characters (A-F, 0-9)",
+            )
+
+        user.approval_code_hash = hash_password(normalized)
+
+        await self.audit.log(
+            AuditAction.UPDATE,
+            user_id=user.id,
+            username=user.username,
+            entity_type="user",
+            entity_id=user.id,
+            description="Approval code configured",
+            request=request,
+        )
+        await self.db.commit()
+
+    async def update_profile(
+        self, user: User, full_name: str, request: Request | None = None
+    ) -> None:
+        normalized = full_name.strip()
+        if not normalized:
+            raise ValidationAppError("INVALID_FULL_NAME", "Full name is required")
+
+        previous = {"full_name": user.full_name}
+        user.full_name = normalized
+
+        await self.audit.log(
+            AuditAction.UPDATE,
+            user_id=user.id,
+            username=user.username,
+            entity_type="user",
+            entity_id=user.id,
+            previous=previous,
+            new={"full_name": user.full_name},
+            description="Profile updated",
             request=request,
         )
         await self.db.commit()

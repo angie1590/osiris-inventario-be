@@ -26,7 +26,7 @@ class EgresoCreate(BaseModel):
 
 
 class BajaCreate(BaseModel):
-    reference: str | None = Field(None, max_length=200)
+    reference: str = Field(..., min_length=1, max_length=200)
     notes: str | None = None
     lines: list[DocumentLineCreate] = Field(..., min_length=1)
 
@@ -49,6 +49,8 @@ class ApproveRequest(BaseModel):
 class DocumentLineResponse(BaseModel):
     id: int
     product_id: int
+    product_name: str | None = None
+    product_isbn: str | None = None
     quantity: Decimal
     unit_cost: Decimal
     unit_price: Decimal

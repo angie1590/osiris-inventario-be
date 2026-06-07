@@ -69,7 +69,11 @@ class InventoryRepository:
         result = await self.db.execute(
             select(InventoryDocument)
             .where(InventoryDocument.id == document.id)
-            .options(selectinload(InventoryDocument.lines))
+            .options(
+                selectinload(InventoryDocument.lines).selectinload(
+                    InventoryDocumentLine.product
+                )
+            )
         )
         return result.scalar_one()
 
@@ -77,7 +81,11 @@ class InventoryRepository:
         result = await self.db.execute(
             select(InventoryDocument)
             .where(InventoryDocument.id == document_id)
-            .options(selectinload(InventoryDocument.lines))
+            .options(
+                selectinload(InventoryDocument.lines).selectinload(
+                    InventoryDocumentLine.product
+                )
+            )
         )
         return result.scalar_one_or_none()
 
@@ -85,7 +93,11 @@ class InventoryRepository:
         result = await self.db.execute(
             select(InventoryDocument)
             .where(InventoryDocument.number == number)
-            .options(selectinload(InventoryDocument.lines))
+            .options(
+                selectinload(InventoryDocument.lines).selectinload(
+                    InventoryDocumentLine.product
+                )
+            )
         )
         return result.scalar_one_or_none()
 
@@ -102,7 +114,11 @@ class InventoryRepository:
     ) -> list[InventoryDocument]:
         q = (
             select(InventoryDocument)
-            .options(selectinload(InventoryDocument.lines))
+            .options(
+                selectinload(InventoryDocument.lines).selectinload(
+                    InventoryDocumentLine.product
+                )
+            )
             .where(InventoryDocument.doc_type == doc_type)
             .order_by(InventoryDocument.id.desc())
         )

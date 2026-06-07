@@ -9,8 +9,13 @@ from app.models.enums import DocumentStatus, DocumentType, UserRole
 from app.models.user import User
 from app.repositories.inventory_repository import InventoryRepository
 from app.schemas.inventory import (
-    AjusteCreate, ApproveRequest, AuthCodeRequest,
-    BajaCreate, DocumentResponse, EgresoCreate, IngresoCreate,
+    AjusteCreate,
+    ApproveRequest,
+    AuthCodeRequest,
+    BajaCreate,
+    DocumentResponse,
+    EgresoCreate,
+    IngresoCreate,
 )
 from app.services.inventory_service import InventoryService
 
@@ -18,12 +23,16 @@ router = APIRouter()
 
 _operator_up = require_role(UserRole.admin, UserRole.operator)
 _admin_only = require_role(UserRole.admin)
+_approver_roles = require_role(UserRole.admin, UserRole.supervisor)
 _read_roles = require_role(UserRole.admin, UserRole.operator, UserRole.supervisor)
 
 
 # --- Ingresos ---
 
-@router.post("/ingresos", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
+
+@router.post(
+    "/ingresos", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_ingreso(
     body: IngresoCreate,
     request: Request,
@@ -32,7 +41,14 @@ async def create_ingreso(
     _company: None = Depends(require_company_configured),
 ):
     svc = InventoryService(db)
-    return await svc.create_ingreso(body.reference, body.notes, body.lines, current_user.id, current_user.username, request)
+    return await svc.create_ingreso(
+        body.reference,
+        body.notes,
+        body.lines,
+        current_user.id,
+        current_user.username,
+        request,
+    )
 
 
 @router.get("/ingresos", response_model=list[DocumentResponse])
@@ -47,7 +63,15 @@ async def list_ingresos(
     _: User = Depends(_read_roles),
 ):
     repo = InventoryRepository(db)
-    return await repo.list(DocumentType.IN, date_from, date_to, product_id, created_by, limit=limit, cursor=cursor)
+    return await repo.list(
+        DocumentType.IN,
+        date_from,
+        date_to,
+        product_id,
+        created_by,
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 @router.get("/ingresos/{document_id}", response_model=DocumentResponse)
@@ -57,6 +81,7 @@ async def get_ingreso(
     _: User = Depends(_read_roles),
 ):
     from app.core.exceptions import NotFoundError
+
     repo = InventoryRepository(db)
     doc = await repo.get_by_id(document_id)
     if not doc or doc.doc_type != DocumentType.IN:
@@ -66,7 +91,10 @@ async def get_ingreso(
 
 # --- Egresos ---
 
-@router.post("/egresos", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
+
+@router.post(
+    "/egresos", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_egreso(
     body: EgresoCreate,
     request: Request,
@@ -75,7 +103,14 @@ async def create_egreso(
     _company: None = Depends(require_company_configured),
 ):
     svc = InventoryService(db)
-    return await svc.create_egreso(body.reference, body.notes, body.lines, current_user.id, current_user.username, request)
+    return await svc.create_egreso(
+        body.reference,
+        body.notes,
+        body.lines,
+        current_user.id,
+        current_user.username,
+        request,
+    )
 
 
 @router.get("/egresos", response_model=list[DocumentResponse])
@@ -90,7 +125,15 @@ async def list_egresos(
     _: User = Depends(_read_roles),
 ):
     repo = InventoryRepository(db)
-    return await repo.list(DocumentType.EG, date_from, date_to, product_id, created_by, limit=limit, cursor=cursor)
+    return await repo.list(
+        DocumentType.EG,
+        date_from,
+        date_to,
+        product_id,
+        created_by,
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 @router.get("/egresos/{document_id}", response_model=DocumentResponse)
@@ -100,6 +143,7 @@ async def get_egreso(
     _: User = Depends(_read_roles),
 ):
     from app.core.exceptions import NotFoundError
+
     repo = InventoryRepository(db)
     doc = await repo.get_by_id(document_id)
     if not doc or doc.doc_type != DocumentType.EG:
@@ -109,7 +153,10 @@ async def get_egreso(
 
 # --- Bajas ---
 
-@router.post("/bajas", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
+
+@router.post(
+    "/bajas", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_baja(
     body: BajaCreate,
     request: Request,
@@ -118,10 +165,19 @@ async def create_baja(
     _company: None = Depends(require_company_configured),
 ):
     svc = InventoryService(db)
-    return await svc.create_baja(body.reference, body.notes, body.lines, current_user.id, current_user.username, request)
+    return await svc.create_baja(
+        body.reference,
+        body.notes,
+        body.lines,
+        current_user.id,
+        current_user.username,
+        request,
+    )
 
 
-@router.post("/bajas/{document_id}/authorization-code", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/bajas/{document_id}/authorization-code", status_code=status.HTTP_201_CREATED
+)
 async def generate_baja_auth_code(
     document_id: int,
     request: Request,
@@ -129,7 +185,9 @@ async def generate_baja_auth_code(
     current_user: User = Depends(_admin_only),
 ):
     svc = InventoryService(db)
-    code = await svc.generate_auth_code(document_id, current_user.id, current_user.username, request)
+    code = await svc.generate_auth_code(
+        document_id, current_user.id, current_user.username, request
+    )
     return {"authorization_code": code, "expires_in_minutes": 15}
 
 
@@ -139,10 +197,16 @@ async def approve_baja(
     body: ApproveRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_admin_only),
+    current_user: User = Depends(_approver_roles),
 ):
     svc = InventoryService(db)
-    return await svc.approve_document(document_id, body.authorization_code, current_user.id, current_user.username, request)
+    return await svc.approve_document(
+        document_id,
+        body.authorization_code,
+        current_user.id,
+        current_user.username,
+        request,
+    )
 
 
 @router.post("/bajas/{document_id}/cancel", response_model=DocumentResponse)
@@ -153,7 +217,9 @@ async def cancel_baja(
     current_user: User = Depends(_operator_up),
 ):
     svc = InventoryService(db)
-    return await svc.cancel_document(document_id, current_user.id, current_user.username, request)
+    return await svc.cancel_document(
+        document_id, current_user.id, current_user.username, request
+    )
 
 
 @router.get("/bajas", response_model=list[DocumentResponse])
@@ -168,7 +234,16 @@ async def list_bajas(
     _: User = Depends(_read_roles),
 ):
     repo = InventoryRepository(db)
-    return await repo.list(DocumentType.BI, date_from, date_to, None, created_by, status=status, limit=limit, cursor=cursor)
+    return await repo.list(
+        DocumentType.BI,
+        date_from,
+        date_to,
+        None,
+        created_by,
+        status=status,
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 @router.get("/bajas/{document_id}", response_model=DocumentResponse)
@@ -178,6 +253,7 @@ async def get_baja(
     _: User = Depends(_read_roles),
 ):
     from app.core.exceptions import NotFoundError
+
     repo = InventoryRepository(db)
     doc = await repo.get_by_id(document_id)
     if not doc or doc.doc_type != DocumentType.BI:
@@ -187,7 +263,10 @@ async def get_baja(
 
 # --- Ajustes ---
 
-@router.post("/ajustes", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
+
+@router.post(
+    "/ajustes", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_ajuste(
     body: AjusteCreate,
     request: Request,
@@ -196,10 +275,20 @@ async def create_ajuste(
     _company: None = Depends(require_company_configured),
 ):
     svc = InventoryService(db)
-    return await svc.create_ajuste(body.adjust_type, body.reference, body.notes, body.lines, current_user.id, current_user.username, request)
+    return await svc.create_ajuste(
+        body.adjust_type,
+        body.reference,
+        body.notes,
+        body.lines,
+        current_user.id,
+        current_user.username,
+        request,
+    )
 
 
-@router.post("/ajustes/{document_id}/authorization-code", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/ajustes/{document_id}/authorization-code", status_code=status.HTTP_201_CREATED
+)
 async def generate_ajuste_auth_code(
     document_id: int,
     request: Request,
@@ -207,7 +296,9 @@ async def generate_ajuste_auth_code(
     current_user: User = Depends(_admin_only),
 ):
     svc = InventoryService(db)
-    code = await svc.generate_auth_code(document_id, current_user.id, current_user.username, request)
+    code = await svc.generate_auth_code(
+        document_id, current_user.id, current_user.username, request
+    )
     return {"authorization_code": code, "expires_in_minutes": 15}
 
 
@@ -217,10 +308,16 @@ async def approve_ajuste(
     body: ApproveRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_admin_only),
+    current_user: User = Depends(_approver_roles),
 ):
     svc = InventoryService(db)
-    return await svc.approve_document(document_id, body.authorization_code, current_user.id, current_user.username, request)
+    return await svc.approve_document(
+        document_id,
+        body.authorization_code,
+        current_user.id,
+        current_user.username,
+        request,
+    )
 
 
 @router.post("/ajustes/{document_id}/cancel", response_model=DocumentResponse)
@@ -231,7 +328,9 @@ async def cancel_ajuste(
     current_user: User = Depends(_operator_up),
 ):
     svc = InventoryService(db)
-    return await svc.cancel_document(document_id, current_user.id, current_user.username, request)
+    return await svc.cancel_document(
+        document_id, current_user.id, current_user.username, request
+    )
 
 
 @router.get("/ajustes", response_model=list[DocumentResponse])
@@ -246,7 +345,16 @@ async def list_ajustes(
     _: User = Depends(_read_roles),
 ):
     repo = InventoryRepository(db)
-    return await repo.list(DocumentType.AI, date_from, date_to, None, created_by, status=status, limit=limit, cursor=cursor)
+    return await repo.list(
+        DocumentType.AI,
+        date_from,
+        date_to,
+        None,
+        created_by,
+        status=status,
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 @router.get("/ajustes/{document_id}", response_model=DocumentResponse)
@@ -256,6 +364,7 @@ async def get_ajuste(
     _: User = Depends(_read_roles),
 ):
     from app.core.exceptions import NotFoundError
+
     repo = InventoryRepository(db)
     doc = await repo.get_by_id(document_id)
     if not doc or doc.doc_type != DocumentType.AI:

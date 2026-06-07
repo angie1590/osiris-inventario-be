@@ -1,12 +1,14 @@
-from datetime import datetime
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Callable, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_company_configured, require_role
 from app.core.exceptions import ValidationAppError
@@ -25,12 +27,137 @@ router = APIRouter()
 
 _read_roles = require_role(UserRole.admin, UserRole.supervisor)
 
+_STATUS_LABELS = {
+    "draft": "Borrador",
+    "pending": "Pendiente",
+    "approved": "Aprobado",
+    "rejected": "Rechazado",
+    "cancelled": "Anulado",
+}
+
+_DOC_TYPE_LABELS = {
+    DocumentType.IN.value: "Ingreso",
+    DocumentType.EG.value: "Egreso",
+    DocumentType.BI.value: "Baja",
+    DocumentType.AI.value: "Ajuste",
+}
+
+_ADJUST_TYPE_LABELS = {
+    "increment": "Incremento",
+    "decrement": "Decremento",
+}
+
+
+def _status_label(value: str | None) -> str:
+    if not value:
+        return ""
+    return _STATUS_LABELS.get(value.lower(), value)
+
+
+def _doc_type_label(value: str | None) -> str:
+    if not value:
+        return ""
+    return _DOC_TYPE_LABELS.get(value.upper(), value)
+
+
+def _adjust_type_label(value: str | None) -> str:
+    if not value:
+        return ""
+    return _ADJUST_TYPE_LABELS.get(value.lower(), value)
+
+
+async def _username_map(db: AsyncSession, user_ids: set[int]) -> dict[int, str]:
+    if not user_ids:
+        return {}
+    result = await db.execute(
+        select(User.id, User.username).where(User.id.in_(user_ids))
+    )
+    return {uid: username for uid, username in result.all()}
+
 
 def _validate_date_range(date_from: datetime, date_to: datetime) -> None:
     if date_from > date_to:
         raise ValidationAppError(
             "INVALID_DATE_RANGE", "date_from must be before date_to"
         )
+
+
+def _parse_iso_datetime(
+    value: str, *, end_of_day_for_date_only: bool
+) -> tuple[datetime, bool, date | None]:
+    raw = value.strip()
+
+    # Date-only values are interpreted as full day bounds in business timezone.
+    if "T" not in raw and " " not in raw:
+        d = date.fromisoformat(raw)
+        local_tz = ZoneInfo(settings.APP_TIMEZONE)
+        local_dt = datetime.combine(
+            d, time.max if end_of_day_for_date_only else time.min, tzinfo=local_tz
+        )
+        return local_dt.astimezone(timezone.utc), True, d
+
+    # Datetime values keep their explicit precision.
+    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt, False, None
+
+
+def _resolve_report_range(date_from: str, date_to: str) -> tuple[datetime, datetime]:
+    try:
+        date_from_dt, _, _ = _parse_iso_datetime(
+            date_from, end_of_day_for_date_only=False
+        )
+        date_to_dt, _, _ = _parse_iso_datetime(date_to, end_of_day_for_date_only=True)
+    except ValueError:
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime"
+        )
+
+    _validate_date_range(date_from_dt, date_to_dt)
+    return date_from_dt, date_to_dt
+
+
+def _local_date_for_title(dt: datetime) -> str:
+    return dt.astimezone(ZoneInfo(settings.APP_TIMEZONE)).date().isoformat()
+
+
+def _local_date_label(dt: datetime) -> str:
+    return dt.astimezone(ZoneInfo(settings.APP_TIMEZONE)).strftime("%d/%m/%Y")
+
+
+def _group_rows_by_date(
+    items: list[Any],
+    *,
+    get_dt: Callable[[Any], datetime],
+    build_row: Callable[[Any], list[object]],
+    columns: int,
+) -> list[list[object]]:
+    rows: list[list[object]] = []
+    current_date: str | None = None
+    count_in_group = 0
+
+    for item in items:
+        label = _local_date_label(get_dt(item))
+        if current_date != label:
+            if current_date is not None:
+                rows.append(
+                    [f"__SUBTOTAL__:Total registros en la fecha: {count_in_group}"]
+                )
+            current_date = label
+            count_in_group = 0
+            rows.append([f"__SECTION__:Fecha: {label}"])
+
+        row = list(build_row(item))
+        if len(row) < columns:
+            row.extend([""] * (columns - len(row)))
+        rows.append(row)
+        count_in_group += 1
+
+    if current_date is not None:
+        rows.append([f"__SUBTOTAL__:Total registros en la fecha: {count_in_group}"])
+
+    return rows
 
 
 def _export_response(fmt: str, data: bytes, filename: str) -> Response:
@@ -64,10 +191,29 @@ async def _build_export_header(db: AsyncSession, title: str) -> dict | None:
     return build_header(company, title) if company else None
 
 
+async def _get_stock_quantity_mode(db: AsyncSession) -> str:
+    result = await db.execute(
+        select(SystemParam).where(SystemParam.key == "stock_quantity_mode")
+    )
+    param = result.scalar_one_or_none()
+    if not param:
+        return "integer"
+    value = str(param.value).strip().lower()
+    return "decimal" if value == "decimal" else "integer"
+
+
+@router.get("/settings")
+async def report_settings(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    return {"stock_quantity_mode": await _get_stock_quantity_mode(db)}
+
+
 @router.get("/ingresos")
 async def report_ingresos(
-    date_from: datetime = Query(...),
-    date_to: datetime = Query(...),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
     product_id: int | None = None,
     category_id: int | None = None,
     created_by: int | None = None,
@@ -78,11 +224,11 @@ async def report_ingresos(
     current_user: User = Depends(_read_roles),
     _company: None = Depends(require_company_configured),
 ):
-    _validate_date_range(date_from, date_to)
+    date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
     q = select(InventoryDocument).where(
         InventoryDocument.doc_type == DocumentType.IN,
-        InventoryDocument.created_at >= date_from,
-        InventoryDocument.created_at <= date_to,
+        InventoryDocument.created_at >= date_from_dt,
+        InventoryDocument.created_at <= date_to_dt,
     )
     if created_by:
         q = q.where(InventoryDocument.created_by == created_by)
@@ -102,23 +248,33 @@ async def report_ingresos(
                 "id": d.id,
                 "number": d.number,
                 "status": d.status.value,
+                "reference": d.reference,
                 "created_at": d.created_at.isoformat(),
             }
             for d in docs
         ]
 
-    headers = ["Número", "Estado", "Referencia", "Fecha", "Creado por"]
-    rows = [
-        [
+    headers = ["Número", "Fecha", "Referencia", "Estado", "Creado por"]
+    usernames = await _username_map(
+        db,
+        {d.created_by for d in docs if d.created_by is not None},
+    )
+    rows = _group_rows_by_date(
+        docs,
+        get_dt=lambda d: d.created_at,
+        build_row=lambda d: [
             d.number,
-            d.status.value,
-            d.reference or "",
             d.created_at.strftime("%Y-%m-%d"),
-            d.created_by,
-        ]
-        for d in docs
-    ]
-    title = f"Reporte de Ingresos — {date_from.date()} a {date_to.date()}"
+            d.reference or "",
+            _status_label(d.status.value),
+            usernames.get(d.created_by, ""),
+        ],
+        columns=len(headers),
+    )
+    title = (
+        f"Reporte de Ingresos — {_local_date_for_title(date_from_dt)} "
+        f"a {_local_date_for_title(date_to_dt)}"
+    )
     ch = await _build_export_header(db, title)
 
     if format == "pdf":
@@ -126,8 +282,8 @@ async def report_ingresos(
             headers,
             rows,
             title,
-            date_from,
-            date_to,
+            date_from_dt,
+            date_to_dt,
             current_user.username,
             company_header=ch,
         )
@@ -138,8 +294,8 @@ async def report_ingresos(
 
 @router.get("/egresos")
 async def report_egresos(
-    date_from: datetime = Query(...),
-    date_to: datetime = Query(...),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
     product_id: int | None = None,
     created_by: int | None = None,
     format: Literal["json", "pdf", "excel"] = "json",
@@ -150,11 +306,11 @@ async def report_egresos(
     current_user: User = Depends(require_role(UserRole.admin, UserRole.supervisor)),
     _company: None = Depends(require_company_configured),
 ):
-    _validate_date_range(date_from, date_to)
+    date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
     q = select(InventoryDocument).where(
         InventoryDocument.doc_type == DocumentType.EG,
-        InventoryDocument.created_at >= date_from,
-        InventoryDocument.created_at <= date_to,
+        InventoryDocument.created_at >= date_from_dt,
+        InventoryDocument.created_at <= date_to_dt,
     )
     if created_by:
         q = q.where(InventoryDocument.created_by == created_by)
@@ -174,25 +330,36 @@ async def report_egresos(
                 "id": d.id,
                 "number": d.number,
                 "status": d.status.value,
+                "reference": d.reference,
                 "created_at": d.created_at.isoformat(),
             }
             for d in docs
         ]
 
-    headers = ["Número", "Estado", "Referencia", "Fecha"]
-    rows = [
-        [d.number, d.status.value, d.reference or "", d.created_at.strftime("%Y-%m-%d")]
-        for d in docs
-    ]
-    title = f"Reporte de Egresos — {date_from.date()} a {date_to.date()}"
+    headers = ["Número", "Fecha", "Referencia", "Estado"]
+    rows = _group_rows_by_date(
+        docs,
+        get_dt=lambda d: d.created_at,
+        build_row=lambda d: [
+            d.number,
+            d.created_at.strftime("%Y-%m-%d"),
+            d.reference or "",
+            _status_label(d.status.value),
+        ],
+        columns=len(headers),
+    )
+    title = (
+        f"Reporte de Egresos — {_local_date_for_title(date_from_dt)} "
+        f"a {_local_date_for_title(date_to_dt)}"
+    )
     ch = await _build_export_header(db, title)
     if format == "pdf":
         data = ExportService.to_pdf(
             headers,
             rows,
             title,
-            date_from,
-            date_to,
+            date_from_dt,
+            date_to_dt,
             current_user.username,
             company_header=ch,
         )
@@ -203,8 +370,8 @@ async def report_egresos(
 
 @router.get("/bajas")
 async def report_bajas(
-    date_from: datetime = Query(...),
-    date_to: datetime = Query(...),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
     created_by: int | None = None,
     format: Literal["json", "pdf", "excel"] = "json",
     limit: int = 100,
@@ -213,11 +380,11 @@ async def report_bajas(
     current_user: User = Depends(_read_roles),
     _company: None = Depends(require_company_configured),
 ):
-    _validate_date_range(date_from, date_to)
+    date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
     q = select(InventoryDocument).where(
         InventoryDocument.doc_type == DocumentType.BI,
-        InventoryDocument.created_at >= date_from,
-        InventoryDocument.created_at <= date_to,
+        InventoryDocument.created_at >= date_from_dt,
+        InventoryDocument.created_at <= date_to_dt,
     )
     if created_by:
         q = q.where(InventoryDocument.created_by == created_by)
@@ -232,16 +399,27 @@ async def report_bajas(
                 "id": d.id,
                 "number": d.number,
                 "status": d.status.value,
+                "reference": d.reference,
                 "created_at": d.created_at.isoformat(),
             }
             for d in docs
         ]
-    headers = ["Número", "Estado", "Notas", "Fecha"]
-    rows = [
-        [d.number, d.status.value, d.notes or "", d.created_at.strftime("%Y-%m-%d")]
-        for d in docs
-    ]
-    title = f"Reporte de Bajas — {date_from.date()} a {date_to.date()}"
+    headers = ["Número", "Fecha", "Notas", "Estado"]
+    rows = _group_rows_by_date(
+        docs,
+        get_dt=lambda d: d.created_at,
+        build_row=lambda d: [
+            d.number,
+            d.created_at.strftime("%Y-%m-%d"),
+            d.notes or "",
+            _status_label(d.status.value),
+        ],
+        columns=len(headers),
+    )
+    title = (
+        f"Reporte de Bajas — {_local_date_for_title(date_from_dt)} "
+        f"a {_local_date_for_title(date_to_dt)}"
+    )
     ch = await _build_export_header(db, title)
     if format == "pdf":
         return _export_response(
@@ -250,8 +428,8 @@ async def report_bajas(
                 headers,
                 rows,
                 title,
-                date_from,
-                date_to,
+                date_from_dt,
+                date_to_dt,
                 current_user.username,
                 company_header=ch,
             ),
@@ -266,8 +444,8 @@ async def report_bajas(
 
 @router.get("/ajustes")
 async def report_ajustes(
-    date_from: datetime = Query(...),
-    date_to: datetime = Query(...),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
     created_by: int | None = None,
     format: Literal["json", "pdf", "excel"] = "json",
     limit: int = 100,
@@ -276,11 +454,11 @@ async def report_ajustes(
     current_user: User = Depends(_read_roles),
     _company: None = Depends(require_company_configured),
 ):
-    _validate_date_range(date_from, date_to)
+    date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
     q = select(InventoryDocument).where(
         InventoryDocument.doc_type == DocumentType.AI,
-        InventoryDocument.created_at >= date_from,
-        InventoryDocument.created_at <= date_to,
+        InventoryDocument.created_at >= date_from_dt,
+        InventoryDocument.created_at <= date_to_dt,
     )
     if created_by:
         q = q.where(InventoryDocument.created_by == created_by)
@@ -295,22 +473,28 @@ async def report_ajustes(
                 "id": d.id,
                 "number": d.number,
                 "status": d.status.value,
+                "reference": d.reference,
                 "adjust_type": d.adjust_type.value if d.adjust_type else None,
                 "created_at": d.created_at.isoformat(),
             }
             for d in docs
         ]
-    headers = ["Número", "Estado", "Tipo", "Fecha"]
-    rows = [
-        [
+    headers = ["Número", "Fecha", "Tipo", "Estado"]
+    rows = _group_rows_by_date(
+        docs,
+        get_dt=lambda d: d.created_at,
+        build_row=lambda d: [
             d.number,
-            d.status.value,
-            d.adjust_type.value if d.adjust_type else "",
             d.created_at.strftime("%Y-%m-%d"),
-        ]
-        for d in docs
-    ]
-    title = f"Reporte de Ajustes — {date_from.date()} a {date_to.date()}"
+            _adjust_type_label(d.adjust_type.value if d.adjust_type else ""),
+            _status_label(d.status.value),
+        ],
+        columns=len(headers),
+    )
+    title = (
+        f"Reporte de Ajustes — {_local_date_for_title(date_from_dt)} "
+        f"a {_local_date_for_title(date_to_dt)}"
+    )
     ch = await _build_export_header(db, title)
     if format == "pdf":
         return _export_response(
@@ -319,8 +503,8 @@ async def report_ajustes(
                 headers,
                 rows,
                 title,
-                date_from,
-                date_to,
+                date_from_dt,
+                date_to_dt,
                 current_user.username,
                 company_header=ch,
             ),
@@ -369,14 +553,13 @@ async def report_stock(
             }
             for p in products
         ]
-    headers = ["ID", "Nombre", "Stock Actual", "Stock Mínimo", "Bajo Stock", "PVP"]
+    headers = ["Nombre", "Bajo Stock", "Stock Mínimo", "Stock Actual", "PVP"]
     rows = [
         [
-            p.id,
             p.name,
-            float(p.stock_actual),
-            float(p.stock_minimo),
             "Sí" if p.stock_actual <= p.stock_minimo else "No",
+            float(p.stock_minimo),
+            float(p.stock_actual),
             float(p.pvp),
         ]
         for p in products
@@ -441,7 +624,7 @@ async def report_stock_valorizado(
         last_entry = kres.scalar_one_or_none()
         cost = last_entry.weighted_avg_cost if last_entry else Decimal("0")
         stock = last_entry.balance_quantity if last_entry else p.stock_actual
-        value = stock * cost
+        value = last_entry.balance_value if last_entry else (stock * cost)
         total += value
         items.append(
             {
@@ -456,9 +639,9 @@ async def report_stock_valorizado(
 
     if format == "json":
         return {"method": method, "items": items, "total_value": float(total)}
-    headers = ["ID", "Nombre", "Stock", "Costo Unit.", "Valor Total"]
-    rows = [[i["id"], i["name"], i["stock"], i["cost"], i["value"]] for i in items]
-    rows.append(["", "TOTAL", "", "", float(total)])
+    headers = ["Nombre", "Stock", "Costo Unit.", "Valor Total"]
+    rows = [[i["name"], i["stock"], i["cost"], i["value"]] for i in items]
+    rows.append(["TOTAL", "", "", float(total)])
     title = "Inventario Valorizado"
     ch = await _build_export_header(db, title)
     if format == "pdf":
@@ -484,21 +667,21 @@ async def report_stock_valorizado(
 
 @router.get("/movimientos-por-usuario")
 async def report_movimientos_por_usuario(
-    date_from: datetime = Query(...),
-    date_to: datetime = Query(...),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
     user_id: int = Query(...),
     format: Literal["json", "pdf", "excel"] = "json",
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(_read_roles),
     _company: None = Depends(require_company_configured),
 ):
-    _validate_date_range(date_from, date_to)
+    date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
     q = (
         select(InventoryDocument)
         .where(
             InventoryDocument.created_by == user_id,
-            InventoryDocument.created_at >= date_from,
-            InventoryDocument.created_at <= date_to,
+            InventoryDocument.created_at >= date_from_dt,
+            InventoryDocument.created_at <= date_to_dt,
         )
         .order_by(InventoryDocument.created_at.desc())
     )
@@ -512,16 +695,30 @@ async def report_movimientos_por_usuario(
                 "number": d.number,
                 "doc_type": d.doc_type.value,
                 "status": d.status.value,
+                "reference": d.reference,
                 "created_at": d.created_at.isoformat(),
             }
             for d in docs
         ]
-    headers = ["Número", "Tipo", "Estado", "Fecha"]
-    rows = [
-        [d.number, d.doc_type.value, d.status.value, d.created_at.strftime("%Y-%m-%d")]
-        for d in docs
-    ]
-    title = f"Movimientos del Usuario {user_id}"
+    headers = ["Número", "Fecha", "Tipo", "Estado", "Referencia"]
+    rows = _group_rows_by_date(
+        docs,
+        get_dt=lambda d: d.created_at,
+        build_row=lambda d: [
+            d.number,
+            d.created_at.strftime("%Y-%m-%d"),
+            _doc_type_label(d.doc_type.value),
+            _status_label(d.status.value),
+            d.reference or "",
+        ],
+        columns=len(headers),
+    )
+    user_result = await db.execute(
+        select(User.full_name, User.username).where(User.id == user_id)
+    )
+    user_ref = user_result.first()
+    user_label = user_ref[0] or user_ref[1] if user_ref else str(user_id)
+    title = f"Movimientos de {user_label}"
     ch = await _build_export_header(db, title)
     if format == "pdf":
         return _export_response(
@@ -530,8 +727,8 @@ async def report_movimientos_por_usuario(
                 headers,
                 rows,
                 title,
-                date_from,
-                date_to,
+                date_from_dt,
+                date_to_dt,
                 current_user.username,
                 company_header=ch,
             ),
@@ -544,14 +741,108 @@ async def report_movimientos_por_usuario(
     )
 
 
+@router.get("/kardex")
+async def report_kardex(
+    product_id: int = Query(...),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    format: Literal["json", "pdf", "excel"] = "json",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_read_roles),
+    _company: None = Depends(require_company_configured),
+):
+    date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
+
+    result = await db.execute(
+        select(SystemParam).where(SystemParam.key == "kardex_method")
+    )
+    param = result.scalar_one_or_none()
+    method = param.value if param else "PEPS"
+
+    q = (
+        select(KardexEntry)
+        .where(
+            KardexEntry.product_id == product_id,
+            KardexEntry.created_at >= date_from_dt,
+            KardexEntry.created_at <= date_to_dt,
+        )
+        .order_by(KardexEntry.created_at.asc(), KardexEntry.id.asc())
+    )
+    result = await db.execute(q)
+    entries = list(result.scalars().all())
+
+    product_result = await db.execute(
+        select(Product.name).where(Product.id == product_id)
+    )
+    product_name = product_result.scalar_one_or_none()
+    product_label = product_name or f"ID {product_id}"
+
+    if format == "json":
+        return {
+            "product_id": product_id,
+            "method": method,
+            "entries": [
+                {
+                    "id": e.id,
+                    "created_at": e.created_at.isoformat(),
+                    "quantity_in": float(e.quantity_in),
+                    "quantity_out": float(e.quantity_out),
+                    "balance_quantity": float(e.balance_quantity),
+                    "weighted_avg_cost": float(e.weighted_avg_cost),
+                }
+                for e in entries
+            ],
+        }
+
+    headers = ["Fecha", "Entrada", "Salida", "Saldo", "Costo Promedio"]
+    rows = _group_rows_by_date(
+        entries,
+        get_dt=lambda e: e.created_at,
+        build_row=lambda e: [
+            e.created_at.strftime("%Y-%m-%d %H:%M"),
+            float(e.quantity_in),
+            float(e.quantity_out),
+            float(e.balance_quantity),
+            float(e.weighted_avg_cost),
+        ],
+        columns=len(headers),
+    )
+    title = (
+        f"Kardex de {product_label} — "
+        f"{_local_date_for_title(date_from_dt)} a {_local_date_for_title(date_to_dt)}"
+    )
+    ch = await _build_export_header(db, title)
+    if format == "pdf":
+        return _export_response(
+            "pdf",
+            ExportService.to_pdf(
+                headers,
+                rows,
+                title,
+                date_from_dt,
+                date_to_dt,
+                current_user.username,
+                company_header=ch,
+            ),
+            "reporte_kardex",
+        )
+    return _export_response(
+        "excel",
+        ExportService.to_excel(headers, rows, title, company_header=ch),
+        "reporte_kardex",
+    )
+
+
 @router.get("/consolidado")
 async def report_consolidado(
-    date_from: datetime = Query(...),
-    date_to: datetime = Query(...),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    format: Literal["json", "pdf", "excel"] = "json",
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    current_user: User = Depends(_read_roles),
+    _company: None = Depends(require_company_configured),
 ):
-    _validate_date_range(date_from, date_to)
+    date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
 
     # Totals per doc type
     counts = {}
@@ -559,8 +850,8 @@ async def report_consolidado(
         result = await db.execute(
             select(func.count(InventoryDocument.id)).where(
                 InventoryDocument.doc_type == doc_type,
-                InventoryDocument.created_at >= date_from,
-                InventoryDocument.created_at <= date_to,
+                InventoryDocument.created_at >= date_from_dt,
+                InventoryDocument.created_at <= date_to_dt,
             )
         )
         counts[doc_type.value] = result.scalar() or 0
@@ -574,9 +865,44 @@ async def report_consolidado(
         )
     )
 
-    return {
-        "period": {"from": date_from.isoformat(), "to": date_to.isoformat()},
+    payload = {
+        "period": {"from": date_from_dt.isoformat(), "to": date_to_dt.isoformat()},
         "movements": counts,
         "active_products": total_products.scalar(),
         "products_below_minimum": bajo_stock_count.scalar(),
     }
+    if format == "json":
+        return payload
+
+    headers = ["Métrica", "Valor"]
+    rows = [[f"Movimientos {_doc_type_label(k)}", v] for k, v in counts.items()]
+    rows.extend(
+        [
+            ["Productos activos", payload["active_products"]],
+            ["Productos bajo mínimo", payload["products_below_minimum"]],
+        ]
+    )
+    title = (
+        f"Reporte Consolidado — {_local_date_for_title(date_from_dt)} "
+        f"a {_local_date_for_title(date_to_dt)}"
+    )
+    ch = await _build_export_header(db, title)
+    if format == "pdf":
+        return _export_response(
+            "pdf",
+            ExportService.to_pdf(
+                headers,
+                rows,
+                title,
+                date_from_dt,
+                date_to_dt,
+                current_user.username,
+                company_header=ch,
+            ),
+            "reporte_consolidado",
+        )
+    return _export_response(
+        "excel",
+        ExportService.to_excel(headers, rows, title, company_header=ch),
+        "reporte_consolidado",
+    )

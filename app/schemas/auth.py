@@ -30,6 +30,14 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 
+class ApprovalCodeRequest(BaseModel):
+    approval_code: str = Field(..., min_length=8, max_length=8)
+
+
+class ProfileUpdateRequest(BaseModel):
+    full_name: str = Field(..., min_length=1, max_length=100)
+
+
 class MeResponse(BaseModel):
     id: int
     username: str
@@ -37,5 +45,6 @@ class MeResponse(BaseModel):
     role: str
     is_active: bool
     require_password_change: bool
+    has_approval_code: bool
 
     model_config = ConfigDict(from_attributes=True)

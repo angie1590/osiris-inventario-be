@@ -2,6 +2,7 @@
 
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 
 import pytest
 import pytest_asyncio
@@ -63,6 +64,23 @@ async def test_report_ingresos_json(
     assert isinstance(data, list)
     assert len(data) >= 1
     assert "number" in data[0]
+
+
+@pytest.mark.asyncio
+async def test_report_ingresos_json_date_only_includes_same_day(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    await _seed_ingreso(client, admin_token, operator_token)
+    today = _now().date().isoformat()
+    resp = await client.get(
+        "/api/v1/reports/ingresos",
+        params={"date_from": today, "date_to": today, "format": "json"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, list)
+    assert len(data) >= 1
 
 
 @pytest.mark.asyncio
@@ -191,6 +209,74 @@ async def test_report_stock_valorizado(
     assert "items" in data
     assert "total_value" in data
     assert "method" in data
+
+
+@pytest.mark.asyncio
+async def test_report_stock_valorizado_matches_kardex_balance_value_weighted_average(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+    db_session: AsyncSession,
+):
+    from app.models.system_param import SystemParam
+
+    db_session.add(
+        SystemParam(key="kardex_method", value="WEIGHTED_AVERAGE", description="test")
+    )
+    await db_session.commit()
+
+    cat = await client.post(
+        "/api/v1/categories",
+        json={"name": "ReportWeightedCat"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    cat_id = cat.json()["id"]
+    prod = await client.post(
+        "/api/v1/products",
+        json={"name": "ReportWeightedProd", "category_id": cat_id, "pvp": "1.00"},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    prod_id = prod.json()["id"]
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "lines": [{"product_id": prod_id, "quantity": "10", "unit_cost": "10.00"}]
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "lines": [{"product_id": prod_id, "quantity": "10", "unit_cost": "20.00"}]
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "lines": [{"product_id": prod_id, "quantity": "5", "unit_price": "30.00"}]
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    kardex_resp = await client.get(
+        f"/api/v1/kardex/{prod_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert kardex_resp.status_code == 200
+    closing_value = Decimal(str(kardex_resp.json()["closing_balance_value"]))
+
+    report_resp = await client.get(
+        "/api/v1/reports/stock-valorizado",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert report_resp.status_code == 200
+    items = report_resp.json()["items"]
+    item = next(i for i in items if i["id"] == prod_id)
+    report_value = Decimal(str(item["value"]))
+
+    assert report_value == closing_value
 
 
 @pytest.mark.asyncio

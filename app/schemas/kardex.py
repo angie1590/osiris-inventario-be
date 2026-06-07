@@ -32,5 +32,6 @@ class KardexResponse(BaseModel):
     opening_balance_value: Decimal
     closing_balance_quantity: Decimal
     closing_balance_value: Decimal
+    weighted_avg_cost: Decimal
     total_in_quantity: Decimal
     total_out_quantity: Decimal

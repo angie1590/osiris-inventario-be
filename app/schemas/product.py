@@ -8,6 +8,7 @@ from app.models.enums import ProductStatus
 
 
 class ProductCreate(BaseModel):
+    isbn: str | None = Field(None, min_length=10, max_length=32)
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = Field(None, max_length=1000)
     category_id: int
@@ -17,6 +18,7 @@ class ProductCreate(BaseModel):
 
 
 class ProductUpdate(BaseModel):
+    isbn: str | None = Field(None, min_length=10, max_length=32)
     name: str | None = Field(None, min_length=1, max_length=200)
     description: str | None = Field(None, max_length=1000)
     stock_minimo: Decimal | None = Field(None, ge=0)
@@ -30,6 +32,7 @@ class ProductStatusUpdate(BaseModel):
 
 class ProductResponse(BaseModel):
     id: int
+    isbn: str
     name: str
     description: str | None
     category_id: int

@@ -9,13 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import ConflictError, NotFoundError, ValidationAppError
 from app.models.enums import AdjustType, AuditAction, DocumentStatus, DocumentType
+from app.models.enums import UserRole
 from app.models.inventory import (
     AuthorizationCode,
     InventoryDocument,
     InventoryDocumentLine,
 )
+from app.models.user import User
 from app.repositories.inventory_repository import InventoryRepository
 from app.repositories.product_repository import ProductRepository
+from app.core.security import verify_password
 from app.services.audit_service import AuditService
 from app.services.kardex_service import KardexService
 
@@ -220,6 +223,7 @@ class InventoryService:
             )
 
         await self._validate_products_active(lines_data)
+        await self._validate_sufficient_stock(lines_data)
 
         year = datetime.now(timezone.utc).year
         number = await self.repo.generate_document_number(DocumentType.BI, year)
@@ -358,22 +362,34 @@ class InventoryService:
                 "DOCUMENT_NOT_PENDING", "Document is not in pending state"
             )
 
+        approver = await self.db.get(User, actor_id)
+        if not approver or approver.role not in (UserRole.admin, UserRole.supervisor):
+            raise ValidationAppError(
+                "APPROVAL_ROLE_REQUIRED",
+                "Only admin or supervisor can approve this document",
+            )
+
+        if not approver.approval_code_hash:
+            raise ValidationAppError(
+                "APPROVAL_CODE_NOT_CONFIGURED",
+                "Approver does not have a configured approval code",
+            )
+
+        if not verify_password(raw_code.strip().upper(), approver.approval_code_hash):
+            raise ValidationAppError(
+                "APPROVAL_CODE_INVALID", "Approval code is invalid"
+            )
+
         now = datetime.now(timezone.utc)
         auth_code_rec = await self.repo.get_valid_auth_code(document_id, now)
-
-        if not auth_code_rec or auth_code_rec.code_hash != _hash_code(raw_code):
-            raise ValidationAppError(
-                "AUTHORIZATION_CODE_INVALID", "Invalid or expired authorization code"
-            )
+        if auth_code_rec:
+            auth_code_rec.used_at = now
 
         # Validate stock at approval time
         if doc.doc_type in (DocumentType.BI,) or (
             doc.doc_type == DocumentType.AI and doc.adjust_type == AdjustType.decrement
         ):
             await self._validate_sufficient_stock(doc.lines)
-
-        # Mark code as used
-        auth_code_rec.used_at = now
 
         # Apply stock changes
         for line in doc.lines:
