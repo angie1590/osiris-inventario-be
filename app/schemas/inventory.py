@@ -46,6 +46,11 @@ class ApproveRequest(BaseModel):
     authorization_code: str = Field(..., min_length=8, max_length=8)
 
 
+class VoidRequest(BaseModel):
+    # Required only when an operator voids; admin/supervisor void without a PIN.
+    authorizer_pin: str | None = None
+
+
 class DocumentLineResponse(BaseModel):
     id: int
     product_id: int

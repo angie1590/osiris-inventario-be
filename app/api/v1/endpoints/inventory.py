@@ -16,6 +16,7 @@ from app.schemas.inventory import (
     DocumentResponse,
     EgresoCreate,
     IngresoCreate,
+    VoidRequest,
 )
 from app.services.inventory_service import InventoryService
 
@@ -370,3 +371,29 @@ async def get_ajuste(
     if not doc or doc.doc_type != DocumentType.AI:
         raise NotFoundError("DOCUMENT_NOT_FOUND", "Ajuste not found")
     return doc
+
+
+# --- Anulación (void) de documentos aprobados ---
+
+
+@router.post("/documents/{document_id}/void", response_model=DocumentResponse)
+async def void_document(
+    document_id: int,
+    body: VoidRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_read_roles),
+):
+    """Anula un documento aprobado revirtiendo su efecto en stock y Kardex.
+
+    Operadores deben enviar el PIN de un admin/supervisor; admin y supervisor
+    anulan sin PIN.
+    """
+    svc = InventoryService(db)
+    return await svc.void_document(
+        document_id,
+        current_user.id,
+        current_user.username,
+        body.authorizer_pin,
+        request,
+    )

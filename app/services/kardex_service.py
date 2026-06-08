@@ -1,9 +1,11 @@
+from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import ConflictError
 from app.models.inventory import InventoryDocument, InventoryDocumentLine
 from app.models.enums import DocumentType, KardexEntryType
 from app.models.kardex import InventoryLot, KardexEntry
@@ -33,6 +35,74 @@ class KardexService:
             await self._record_peps(document, lines)
         else:
             await self._record_weighted_average(document, lines)
+
+    async def reverse_document(self, document: InventoryDocument) -> None:
+        """Append reversal Kardex entries that negate an approved document's
+        effect and restore lot availability, keeping current balances correct.
+
+        Reversal is exact because each original entry records which lot it
+        touched and by how much. A document whose stock has already been
+        consumed by later movements cannot be reversed (raises CANNOT_VOID).
+        """
+        result = await self.db.execute(
+            select(KardexEntry)
+            .where(KardexEntry.document_id == document.id)
+            .order_by(KardexEntry.id.asc())
+        )
+        entries = list(result.scalars().all())
+        if not entries:
+            return
+
+        # Restore lot availability (PEPS). Weighted-average entries have no lot.
+        for e in entries:
+            if e.lot_id is None:
+                continue
+            lot = await self.db.get(InventoryLot, e.lot_id)
+            if lot is None:
+                continue
+            if e.quantity_in > 0:
+                # This entry created/added to a lot — remove that quantity.
+                if lot.quantity_available < e.quantity_in:
+                    raise ConflictError(
+                        "CANNOT_VOID_STOCK_CONSUMED",
+                        "No se puede anular: el stock de este documento ya fue consumido por movimientos posteriores.",
+                    )
+                lot.quantity_available -= e.quantity_in
+                lot.quantity_initial -= e.quantity_in
+            if e.quantity_out > 0:
+                # This entry consumed from a lot — restore it.
+                lot.quantity_available += e.quantity_out
+
+        # Net effect per product, then append one reversal entry per product.
+        net: dict[int, list[Decimal]] = defaultdict(lambda: [Decimal("0"), Decimal("0")])
+        for e in entries:
+            net[e.product_id][0] += e.quantity_in - e.quantity_out
+            net[e.product_id][1] += (e.quantity_in * e.cost_in) - (e.quantity_out * e.cost_out)
+
+        for product_id, (net_qty, net_val) in net.items():
+            bal_qty, bal_val, _ = await self._get_current_balance(product_id)
+            new_bal_qty = bal_qty - net_qty
+            new_bal_val = bal_val - net_val
+            new_avg = (new_bal_val / new_bal_qty) if new_bal_qty > 0 else Decimal("0")
+            if self.method != "PEPS" and new_bal_qty > 0:
+                new_avg = new_avg.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            unit = (net_val / net_qty) if net_qty != 0 else Decimal("0")
+
+            entry = KardexEntry(
+                product_id=product_id,
+                document_id=document.id,
+                document_line_id=None,
+                entry_type=KardexEntryType.ADJUST,
+                quantity_in=(-net_qty if net_qty < 0 else Decimal("0")),
+                cost_in=(unit if net_qty < 0 else Decimal("0")),
+                quantity_out=(net_qty if net_qty > 0 else Decimal("0")),
+                cost_out=(unit if net_qty > 0 else Decimal("0")),
+                balance_quantity=new_bal_qty,
+                balance_value=new_bal_val,
+                weighted_avg_cost=new_avg,
+                lot_id=None,
+            )
+            self.db.add(entry)
 
     async def _record_peps(self, document: InventoryDocument, lines: list[InventoryDocumentLine]) -> None:
         for line in lines:

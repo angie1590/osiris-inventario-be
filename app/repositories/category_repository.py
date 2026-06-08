@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -37,6 +37,27 @@ class CategoryRepository:
             select(Product.id).where(Product.category_id == category_id).limit(1)
         )
         return result.scalar_one_or_none() is not None
+
+    async def count_active_products(self, category_id: int) -> int:
+        from app.models.enums import ProductStatus
+        from app.models.product import Product
+        result = await self.db.execute(
+            select(func.count())
+            .select_from(Product)
+            .where(Product.category_id == category_id, Product.status == ProductStatus.active)
+        )
+        return int(result.scalar_one())
+
+    async def deactivate_products_in_category(self, category_id: int) -> int:
+        """Soft-delete (deactivate) all active products of a category. Returns the count."""
+        from app.models.enums import ProductStatus
+        from app.models.product import Product
+        result = await self.db.execute(
+            update(Product)
+            .where(Product.category_id == category_id, Product.status == ProductStatus.active)
+            .values(status=ProductStatus.inactive)
+        )
+        return result.rowcount or 0
 
     async def get_ancestor_ids(self, category_id: int) -> list[int]:
         """Return list of ancestor category IDs from root to parent."""
@@ -85,6 +106,26 @@ class CategoryRepository:
                     continue
                 return True
         return False
+
+    async def attribute_name_exists_in_descendants(
+        self, category_id: int, name: str, exclude_id: int | None = None
+    ) -> bool:
+        """True if any strict descendant category already has an active attribute
+        with this name (case-insensitive)."""
+        descendant_ids = [
+            cid for cid in await self.get_descendant_category_ids(category_id) if cid != category_id
+        ]
+        if not descendant_ids:
+            return False
+        q = select(CategoryAttribute.id).where(
+            CategoryAttribute.category_id.in_(descendant_ids),
+            CategoryAttribute.is_active == True,
+            func.lower(CategoryAttribute.name) == name.lower(),
+        )
+        if exclude_id:
+            q = q.where(CategoryAttribute.id != exclude_id)
+        result = await self.db.execute(q.limit(1))
+        return result.scalar_one_or_none() is not None
 
     async def get_descendant_category_ids(self, category_id: int) -> list[int]:
         """Return all descendant category IDs (recursive)."""

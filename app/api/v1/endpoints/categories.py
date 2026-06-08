@@ -70,11 +70,18 @@ async def update_category(
 async def delete_category(
     category_id: int,
     request: Request,
+    delete_products: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role(UserRole.admin)),
 ):
     svc = CategoryService(db)
-    await svc.delete_category(category_id, current_user.id, current_user.username, request)
+    await svc.delete_category(
+        category_id,
+        current_user.id,
+        current_user.username,
+        request,
+        delete_products=delete_products,
+    )
 
 
 @router.get("/{category_id}/attributes", response_model=list[CategoryAttributeResponse])

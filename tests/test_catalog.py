@@ -235,3 +235,77 @@ async def test_integer_stock_min_accepted_in_integer_mode(client: AsyncClient, a
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_delete_category_with_products_blocks_then_cascades(
+    client: AsyncClient, admin_token: str
+):
+    cat = await client.post(
+        "/api/v1/categories",
+        json={"name": "Cat With Products"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    cat_id = cat.json()["id"]
+    prod = await client.post(
+        "/api/v1/products",
+        json={"name": "Prod In Cat", "category_id": cat_id, "pvp": "5.00"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    prod_id = prod.json()["id"]
+
+    # Without delete_products -> blocked with descriptive 409
+    blocked = await client.delete(
+        f"/api/v1/categories/{cat_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "CATEGORY_HAS_PRODUCTS"
+    assert "1" in blocked.json()["message"]
+
+    # With delete_products=true -> category deleted and product deactivated
+    ok = await client.delete(
+        f"/api/v1/categories/{cat_id}?delete_products=true",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert ok.status_code == 204
+
+    prod_after = await client.get(
+        f"/api/v1/products/{prod_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert prod_after.json()["status"] == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_attribute_blocked_when_descendant_has_it(
+    client: AsyncClient, admin_token: str
+):
+    h = {"Authorization": f"Bearer {admin_token}"}
+    parent = (await client.post("/api/v1/categories", json={"name": "Branch Parent"}, headers=h)).json()
+    child = (await client.post("/api/v1/categories", json={"name": "Branch Child", "parent_id": parent["id"]}, headers=h)).json()
+
+    # Attribute created on the CHILD
+    r1 = await client.post(f"/api/v1/categories/{child['id']}/attributes", json={"name": "color", "data_type": "text"}, headers=h)
+    assert r1.status_code == 201
+
+    # Adding the same attribute to the PARENT must be blocked (would duplicate via inheritance)
+    r2 = await client.post(f"/api/v1/categories/{parent['id']}/attributes", json={"name": "Color", "data_type": "text"}, headers=h)
+    assert r2.status_code == 409
+    assert r2.json()["code"] == "DUPLICATE_ATTRIBUTE_IN_DESCENDANTS"
+
+
+@pytest.mark.asyncio
+async def test_attribute_blocked_when_ancestor_has_it(
+    client: AsyncClient, admin_token: str
+):
+    h = {"Authorization": f"Bearer {admin_token}"}
+    parent = (await client.post("/api/v1/categories", json={"name": "Anc Parent"}, headers=h)).json()
+    child = (await client.post("/api/v1/categories", json={"name": "Anc Child", "parent_id": parent["id"]}, headers=h)).json()
+
+    await client.post(f"/api/v1/categories/{parent['id']}/attributes", json={"name": "brand", "data_type": "text"}, headers=h)
+
+    # Adding the same attribute to the CHILD must be blocked (already inherited)
+    r = await client.post(f"/api/v1/categories/{child['id']}/attributes", json={"name": "Brand", "data_type": "text"}, headers=h)
+    assert r.status_code == 409
+    assert r.json()["code"] == "DUPLICATE_ATTRIBUTE_IN_HIERARCHY"

@@ -5,7 +5,9 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-_TODAY = date.today().isoformat()
+# Bracket the current moment by ±1 day so the audit-range filter is robust to
+# the UTC/local-day boundary (the API filters by APP_TIMEZONE local day).
+_TODAY = (date.today() - timedelta(days=1)).isoformat()
 _TOMORROW = (date.today() + timedelta(days=1)).isoformat()
 
 VALID_PAYLOAD = {

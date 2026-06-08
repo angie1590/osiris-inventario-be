@@ -33,6 +33,24 @@ async def _create_product(
     return prod.json()["id"]
 
 
+_APPROVAL_PIN = "ABCD1234"
+
+
+async def _approve_baja(client, admin_token, bi_id, code=_APPROVAL_PIN):
+    """Approve a BI using the approver's approval code (PIN). The approver must
+    have a configured approval code; we set it here for the test."""
+    await client.post(
+        "/api/v1/auth/approval-code",
+        json={"approval_code": _APPROVAL_PIN},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    return await client.post(
+        f"/api/v1/inventory/bajas/{bi_id}/approve",
+        json={"authorization_code": code},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+
 @pytest.mark.asyncio
 async def test_ingreso_increases_stock(
     client: AsyncClient, admin_token: str, operator_token: str
@@ -186,6 +204,7 @@ async def test_baja_flow(client: AsyncClient, admin_token: str, operator_token: 
     bi_resp = await client.post(
         "/api/v1/inventory/bajas",
         json={
+            "reference": "Damaged",
             "notes": "Damaged",
             "lines": [{"product_id": prod_id, "quantity": "2.00"}],
         },
@@ -202,21 +221,9 @@ async def test_baja_flow(client: AsyncClient, admin_token: str, operator_token: 
     )
     assert float(prod_resp.json()["stock_actual"]) == 10.0
 
-    # Generate auth code
-    code_resp = await client.post(
-        f"/api/v1/inventory/bajas/{bi_id}/authorization-code",
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    assert code_resp.status_code == 201
-    auth_code = code_resp.json()["authorization_code"]
-
-    # Approve
-    approve_resp = await client.post(
-        f"/api/v1/inventory/bajas/{bi_id}/approve",
-        json={"authorization_code": auth_code},
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    assert approve_resp.status_code == 200
+    # Approve using the approver's approval code (PIN)
+    approve_resp = await _approve_baja(client, admin_token, bi_id)
+    assert approve_resp.status_code == 200, approve_resp.text
     assert approve_resp.json()["status"] == "approved"
 
     # Stock should decrease
@@ -242,18 +249,24 @@ async def test_baja_invalid_auth_code(
 
     bi_resp = await client.post(
         "/api/v1/inventory/bajas",
-        json={"lines": [{"product_id": prod_id, "quantity": "1.00"}]},
+        json={"reference": "Baja test", "lines": [{"product_id": prod_id, "quantity": "1.00"}]},
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     bi_id = bi_resp.json()["id"]
 
+    # Approver has a configured PIN, but the supplied code is wrong.
+    await client.post(
+        "/api/v1/auth/approval-code",
+        json={"approval_code": _APPROVAL_PIN},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
     resp = await client.post(
         f"/api/v1/inventory/bajas/{bi_id}/approve",
         json={"authorization_code": "BADCODE1"},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 422
-    assert resp.json()["code"] == "AUTHORIZATION_CODE_INVALID"
+    assert resp.json()["code"] == "APPROVAL_CODE_INVALID"
 
 
 @pytest.mark.asyncio
@@ -274,11 +287,17 @@ async def test_auth_code_expiration_uses_configured_param(
     prod_id = await _create_product(
         client, admin_token, operator_token, "Expire Param Test"
     )
-    bi_resp = await client.post(
-        "/api/v1/inventory/bajas",
-        json={"lines": [{"product_id": prod_id, "quantity": "1.00"}]},
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00", "unit_cost": "1.00"}]},
         headers={"Authorization": f"Bearer {operator_token}"},
     )
+    bi_resp = await client.post(
+        "/api/v1/inventory/bajas",
+        json={"reference": "Baja test", "lines": [{"product_id": prod_id, "quantity": "1.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert bi_resp.status_code == 201, bi_resp.text
     bi_id = bi_resp.json()["id"]
 
     now = datetime.now(timezone.utc)
@@ -314,21 +333,13 @@ async def test_immutable_approved_document(
     )
     bi_resp = await client.post(
         "/api/v1/inventory/bajas",
-        json={"lines": [{"product_id": prod_id, "quantity": "1.00"}]},
+        json={"reference": "Baja test", "lines": [{"product_id": prod_id, "quantity": "1.00"}]},
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     bi_id = bi_resp.json()["id"]
 
-    code_resp = await client.post(
-        f"/api/v1/inventory/bajas/{bi_id}/authorization-code",
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
-    auth_code = code_resp.json()["authorization_code"]
-    await client.post(
-        f"/api/v1/inventory/bajas/{bi_id}/approve",
-        json={"authorization_code": auth_code},
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
+    approve_resp = await _approve_baja(client, admin_token, bi_id)
+    assert approve_resp.status_code == 200, approve_resp.text
 
     # Try to cancel approved document
     cancel_resp = await client.post(
@@ -337,3 +348,203 @@ async def test_immutable_approved_document(
     )
     assert cancel_resp.status_code == 409
     assert cancel_resp.json()["code"] == "DOCUMENT_IS_IMMUTABLE"
+
+
+# --- Anulación (void) de documentos aprobados ---
+
+
+async def _stock(client, token, prod_id):
+    r = await client.get(f"/api/v1/products/{prod_id}", headers={"Authorization": f"Bearer {token}"})
+    return float(r.json()["stock_actual"])
+
+
+@pytest.mark.asyncio
+async def test_void_ingreso_reverts_stock(client, admin_token, operator_token):
+    prod_id = await _create_product(client, admin_token, operator_token, "Void IN")
+    doc = (await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "10.00", "unit_cost": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )).json()
+    assert await _stock(client, admin_token, prod_id) == 10.0
+
+    resp = await client.post(
+        f"/api/v1/inventory/documents/{doc['id']}/void",
+        json={},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "voided"
+    assert await _stock(client, admin_token, prod_id) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_void_egreso_restores_stock(client, admin_token, operator_token):
+    prod_id = await _create_product(client, admin_token, operator_token, "Void EG")
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "20.00", "unit_cost": "3.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    eg = (await client.post(
+        "/api/v1/inventory/egresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00", "unit_price": "9.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )).json()
+    assert await _stock(client, admin_token, prod_id) == 15.0
+
+    resp = await client.post(
+        f"/api/v1/inventory/documents/{eg['id']}/void",
+        json={},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert await _stock(client, admin_token, prod_id) == 20.0
+
+
+@pytest.mark.asyncio
+async def test_operator_void_requires_pin(client, admin_token, operator_token):
+    prod_id = await _create_product(client, admin_token, operator_token, "Void NoPin")
+    doc = (await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "4.00", "unit_cost": "1.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )).json()
+
+    resp = await client.post(
+        f"/api/v1/inventory/documents/{doc['id']}/void",
+        json={},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "VOID_PIN_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_operator_void_with_valid_pin(client, admin_token, operator_token):
+    # Admin configures an approval code (the PIN — distinct from login password).
+    await client.post(
+        "/api/v1/auth/approval-code",
+        json={"approval_code": "ABCD1234"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    prod_id = await _create_product(client, admin_token, operator_token, "Void Pin")
+    doc = (await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "7.00", "unit_cost": "2.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )).json()
+
+    bad = await client.post(
+        f"/api/v1/inventory/documents/{doc['id']}/void",
+        json={"authorizer_pin": "00000000"},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert bad.status_code == 422
+    assert bad.json()["code"] == "VOID_PIN_INVALID"
+
+    ok = await client.post(
+        f"/api/v1/inventory/documents/{doc['id']}/void",
+        json={"authorizer_pin": "abcd1234"},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["status"] == "voided"
+    assert await _stock(client, admin_token, prod_id) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_void_twice_fails(client, admin_token, operator_token):
+    prod_id = await _create_product(client, admin_token, operator_token, "Void Twice")
+    doc = (await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "3.00", "unit_cost": "1.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )).json()
+    await client.post(f"/api/v1/inventory/documents/{doc['id']}/void", json={}, headers={"Authorization": f"Bearer {admin_token}"})
+    again = await client.post(f"/api/v1/inventory/documents/{doc['id']}/void", json={}, headers={"Authorization": f"Bearer {admin_token}"})
+    assert again.status_code == 409
+    assert again.json()["code"] == "DOCUMENT_NOT_APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_void_ingreso_consumed_fails(client, admin_token, operator_token):
+    prod_id = await _create_product(client, admin_token, operator_token, "Void Consumed")
+    ing = (await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "10.00", "unit_cost": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )).json()
+    # Consume all stock with an egreso
+    await client.post(
+        "/api/v1/inventory/egresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "10.00", "unit_price": "9.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    resp = await client.post(
+        f"/api/v1/inventory/documents/{ing['id']}/void",
+        json={},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "CANNOT_VOID_STOCK_CONSUMED"
+
+
+@pytest.mark.asyncio
+async def test_void_ingreso_consumed_fails_weighted_average(
+    client, admin_token, operator_token, db_session
+):
+    # Regression: with WEIGHTED_AVERAGE (no PEPS lots) a consumed-stock void
+    # must still fail cleanly (409), not raise a 500 from the stock function.
+    from app.models.system_param import SystemParam
+
+    db_session.add(SystemParam(key="kardex_method", value="WEIGHTED_AVERAGE"))
+    await db_session.commit()
+
+    prod_id = await _create_product(client, admin_token, operator_token, "Void WA Consumed")
+    ing = (await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "10.00", "unit_cost": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )).json()
+    await client.post(
+        "/api/v1/inventory/egresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "10.00", "unit_price": "9.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    resp = await client.post(
+        f"/api/v1/inventory/documents/{ing['id']}/void",
+        json={},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "CANNOT_VOID_STOCK_CONSUMED"
+
+
+@pytest.mark.asyncio
+async def test_integer_mode_rejects_fractional_quantity(client, admin_token, operator_token):
+    # Default stock_quantity_mode in tests is 'integer' (no seeded param).
+    prod_id = await _create_product(client, admin_token, operator_token, "Int Qty")
+    resp = await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "1.5", "unit_cost": "2.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "INVALID_QUANTITY"
+
+
+@pytest.mark.asyncio
+async def test_decimal_mode_allows_fractional_quantity(client, admin_token, operator_token, db_session):
+    from app.models.system_param import SystemParam
+
+    db_session.add(SystemParam(key="stock_quantity_mode", value="decimal"))
+    await db_session.commit()
+
+    prod_id = await _create_product(client, admin_token, operator_token, "Dec Qty")
+    resp = await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "1.5", "unit_cost": "2.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 201, resp.text

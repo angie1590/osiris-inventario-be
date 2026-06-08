@@ -79,21 +79,41 @@ class CategoryService:
         await self.db.refresh(cat)
         return cat
 
-    async def delete_category(self, category_id: int, actor_id: int, actor_name: str, request=None) -> None:
+    async def delete_category(
+        self,
+        category_id: int,
+        actor_id: int,
+        actor_name: str,
+        request=None,
+        delete_products: bool = False,
+    ) -> None:
         cat = await self.repo.get_by_id(category_id)
         if not cat or not cat.is_active:
-            raise NotFoundError("CATEGORY_NOT_FOUND", "Category not found")
+            raise NotFoundError("CATEGORY_NOT_FOUND", "La categoría no existe o ya fue eliminada.")
 
         if await self.repo.has_active_children(category_id):
-            raise ConflictError("CATEGORY_HAS_CHILDREN", "Category has active subcategories")
-        if await self.repo.has_products(category_id):
-            raise ConflictError("CATEGORY_HAS_PRODUCTS", "Category has assigned products")
+            raise ConflictError(
+                "CATEGORY_HAS_CHILDREN",
+                "No se puede eliminar: la categoría tiene subcategorías activas. Elimínalas o muévelas primero.",
+            )
+
+        product_count = await self.repo.count_active_products(category_id)
+        if product_count > 0 and not delete_products:
+            raise ConflictError(
+                "CATEGORY_HAS_PRODUCTS",
+                f"La categoría tiene {product_count} producto(s) activo(s) asociado(s).",
+            )
+
+        deactivated = 0
+        if product_count > 0 and delete_products:
+            deactivated = await self.repo.deactivate_products_in_category(category_id)
 
         cat.is_active = False
         await self.audit.log(
             AuditAction.DELETE, user_id=actor_id, username=actor_name,
             entity_type="category", entity_id=cat.id,
-            previous={"is_active": True}, new={"is_active": False},
+            previous={"is_active": True},
+            new={"is_active": False, "products_deactivated": deactivated},
             request=request,
         )
         await self.db.commit()
@@ -109,8 +129,19 @@ class CategoryService:
         if not cat or not cat.is_active:
             raise NotFoundError("CATEGORY_NOT_FOUND", "Category not found")
 
+        # An attribute name must be unique across the whole branch (ancestors and
+        # descendants) so it lives at a single level and is inherited without
+        # duplicates.
         if await self.repo.attribute_name_exists_in_hierarchy(category_id, name):
-            raise ConflictError("DUPLICATE_ATTRIBUTE_IN_HIERARCHY", f"Attribute '{name}' already exists in the category hierarchy")
+            raise ConflictError(
+                "DUPLICATE_ATTRIBUTE_IN_HIERARCHY",
+                f"El atributo '{name}' ya existe en una categoría superior y se hereda en esta. No es necesario crearlo aquí.",
+            )
+        if await self.repo.attribute_name_exists_in_descendants(category_id, name):
+            raise ConflictError(
+                "DUPLICATE_ATTRIBUTE_IN_DESCENDANTS",
+                f"El atributo '{name}' ya existe en una o más subcategorías de esta rama. Elimínalo de las subcategorías para colocarlo en este nivel y que se herede.",
+            )
 
         if data_type == AttributeDataType.select and (not select_options or len(select_options) == 0):
             raise ValidationAppError("SELECT_REQUIRES_OPTIONS", "Select type must have at least one option")
@@ -138,7 +169,15 @@ class CategoryService:
             raise NotFoundError("ATTRIBUTE_NOT_FOUND", "Attribute not found in this category")
 
         if name and await self.repo.attribute_name_exists_in_hierarchy(category_id, name, exclude_id=attr_id):
-            raise ConflictError("DUPLICATE_ATTRIBUTE_IN_HIERARCHY", f"Attribute '{name}' already exists in the hierarchy")
+            raise ConflictError(
+                "DUPLICATE_ATTRIBUTE_IN_HIERARCHY",
+                f"El atributo '{name}' ya existe en una categoría superior y se hereda en esta.",
+            )
+        if name and await self.repo.attribute_name_exists_in_descendants(category_id, name, exclude_id=attr_id):
+            raise ConflictError(
+                "DUPLICATE_ATTRIBUTE_IN_DESCENDANTS",
+                f"El atributo '{name}' ya existe en una o más subcategorías de esta rama.",
+            )
 
         if data_type is not None and data_type != attr.data_type:
             has_values = await self.repo.attribute_has_product_values(attr_id)

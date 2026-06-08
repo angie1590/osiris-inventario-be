@@ -1,6 +1,10 @@
 """Tests: Kardex PEPS and Weighted Average (tasks 13.7, 13.8)"""
 
+from datetime import datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+from app.core.config import settings
 
 import pytest
 import pytest_asyncio
@@ -190,7 +194,12 @@ async def test_kardex_date_only_filter_includes_full_day(
     full_data = full_resp.json()
     assert len(full_data["entries"]) >= 1
 
-    movement_date = full_data["entries"][0]["created_at"][:10]
+    # Use the movement's APP_TIMEZONE local date (the API filters date-only
+    # bounds by local day), so this is robust to the UTC/local-day boundary.
+    created_utc = datetime.fromisoformat(
+        full_data["entries"][0]["created_at"].replace("Z", "+00:00")
+    )
+    movement_date = created_utc.astimezone(ZoneInfo(settings.APP_TIMEZONE)).date().isoformat()
     filtered_resp = await client.get(
         f"/api/v1/kardex/{prod_id}",
         params={"date_from": movement_date, "date_to": movement_date},

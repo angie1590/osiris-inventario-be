@@ -31,7 +31,8 @@ class DocumentType(str, enum.Enum):
 class DocumentStatus(str, enum.Enum):
     pending = "pending"
     approved = "approved"
-    cancelled = "cancelled"
+    cancelled = "cancelled"  # a pending document that was cancelled
+    voided = "voided"  # an approved document that was annulled (effect reversed)
 
 
 class AdjustType(str, enum.Enum):

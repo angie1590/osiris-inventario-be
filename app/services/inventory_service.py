@@ -72,6 +72,27 @@ class InventoryService:
                     "PRODUCT_INACTIVE", f"Product {line.product_id} is inactive"
                 )
 
+    async def _get_stock_mode(self) -> str:
+        from app.models.system_param import SystemParam
+
+        result = await self.db.execute(
+            select(SystemParam).where(SystemParam.key == "stock_quantity_mode")
+        )
+        param = result.scalar_one_or_none()
+        return param.value if param else "integer"
+
+    async def _validate_quantity_mode(self, lines: list) -> None:
+        """When stock_quantity_mode is 'integer', reject fractional quantities."""
+        if await self._get_stock_mode() != "integer":
+            return
+        for line in lines:
+            q = Decimal(str(line.quantity))
+            if q != q.to_integral_value():
+                raise ValidationAppError(
+                    "INVALID_QUANTITY",
+                    "La cantidad debe ser un número entero (modo de stock entero).",
+                )
+
     async def _validate_sufficient_stock(self, lines: list) -> None:
         for line in lines:
             p = await self.product_repo.get_by_id(line.product_id)
@@ -106,6 +127,7 @@ class InventoryService:
             )
 
         await self._validate_products_active(lines_data)
+        await self._validate_quantity_mode(lines_data)
 
         year = datetime.now(timezone.utc).year
         number = await self.repo.generate_document_number(DocumentType.IN, year)
@@ -165,6 +187,7 @@ class InventoryService:
             )
 
         await self._validate_products_active(lines_data)
+        await self._validate_quantity_mode(lines_data)
         await self._validate_sufficient_stock(lines_data)
 
         year = datetime.now(timezone.utc).year
@@ -223,6 +246,7 @@ class InventoryService:
             )
 
         await self._validate_products_active(lines_data)
+        await self._validate_quantity_mode(lines_data)
         await self._validate_sufficient_stock(lines_data)
 
         year = datetime.now(timezone.utc).year
@@ -275,6 +299,7 @@ class InventoryService:
             )
 
         await self._validate_products_active(lines_data)
+        await self._validate_quantity_mode(lines_data)
         if adjust_type == AdjustType.decrement:
             await self._validate_sufficient_stock(lines_data)
 
@@ -446,6 +471,114 @@ class InventoryService:
             entity_id=doc.id,
             previous={"status": "pending"},
             new={"status": "cancelled"},
+            request=request,
+        )
+        await self.db.commit()
+        return await self.repo.get_by_id(doc.id)
+
+    def _void_stock_delta(self, doc: InventoryDocument, line: InventoryDocumentLine) -> Decimal:
+        """Stock delta that REVERSES the document's original effect on stock."""
+        if doc.doc_type == DocumentType.IN:
+            return -line.quantity
+        if doc.doc_type in (DocumentType.EG, DocumentType.BI):
+            return line.quantity
+        if doc.doc_type == DocumentType.AI:
+            return -line.quantity if doc.adjust_type == AdjustType.increment else line.quantity
+        return Decimal("0")
+
+    async def _resolve_void_authorizer(self, actor: User, authorizer_pin: str | None) -> User:
+        """Resolve who authorizes the void.
+
+        Admin/supervisor authorize themselves (no PIN). Operators must supply
+        an admin/supervisor PIN (the approval code — a secret distinct from the
+        login password); the matching authorizer is recorded for audit.
+        """
+        if actor.role in (UserRole.admin, UserRole.supervisor):
+            return actor
+        if actor.role != UserRole.operator:
+            raise ValidationAppError("VOID_ROLE_FORBIDDEN", "No autorizado para anular documentos")
+        if not authorizer_pin or not authorizer_pin.strip():
+            raise ValidationAppError("VOID_PIN_REQUIRED", "Se requiere el PIN de un supervisor o administrador")
+
+        pin = authorizer_pin.strip().upper()
+        result = await self.db.execute(
+            select(User).where(
+                User.is_active.is_(True),
+                User.role.in_([UserRole.admin, UserRole.supervisor]),
+                User.approval_code_hash.is_not(None),
+            )
+        )
+        for candidate in result.scalars().all():
+            if verify_password(pin, candidate.approval_code_hash):
+                return candidate
+        raise ValidationAppError("VOID_PIN_INVALID", "PIN de autorización inválido")
+
+    async def void_document(
+        self,
+        document_id: int,
+        actor_id: int,
+        actor_name: str,
+        authorizer_pin: str | None = None,
+        request=None,
+    ) -> InventoryDocument:
+        doc = await self.repo.get_by_id(document_id)
+        if not doc:
+            raise NotFoundError("DOCUMENT_NOT_FOUND", "Document not found")
+        if doc.status != DocumentStatus.approved:
+            raise ConflictError(
+                "DOCUMENT_NOT_APPROVED",
+                "Solo se pueden anular documentos aprobados",
+            )
+
+        actor = await self.db.get(User, actor_id)
+        if not actor:
+            raise NotFoundError("USER_NOT_FOUND", "User not found")
+        authorizer = await self._resolve_void_authorizer(actor, authorizer_pin)
+
+        # Pre-check: voiding must not drive any product's stock negative (it
+        # would mean the document's stock was already consumed by later
+        # movements). Done BEFORE any mutation so the failure is a clean 409 and
+        # never an aborted-transaction 500. Works for PEPS and weighted average.
+        from collections import defaultdict
+        from app.models.product import Product
+
+        deltas: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+        for line in doc.lines:
+            deltas[line.product_id] += self._void_stock_delta(doc, line)
+        for product_id, delta in deltas.items():
+            product = await self.db.get(Product, product_id)
+            if product is not None and (product.stock_actual + delta) < 0:
+                raise ConflictError(
+                    "CANNOT_VOID_STOCK_CONSUMED",
+                    "No se puede anular: el stock de este documento ya fue consumido por movimientos posteriores.",
+                )
+
+        # Reverse Kardex (restores lots / appends a reversal entry).
+        method = await self._get_kardex_method()
+        kardex = KardexService(self.db, method)
+        await kardex.reverse_document(doc)
+
+        # Reverse stock (opposite of original delta).
+        for line in doc.lines:
+            await self.product_repo.update_stock(line.product_id, self._void_stock_delta(doc, line))
+
+        doc.status = DocumentStatus.voided
+        doc.authorized_by = authorizer.id
+
+        await self.audit.log(
+            AuditAction.CANCEL,
+            user_id=actor_id,
+            username=actor_name,
+            entity_type="inventory_document",
+            entity_id=doc.id,
+            previous={"status": "approved"},
+            new={
+                "status": "voided",
+                "voided": True,
+                "authorized_by": authorizer.id,
+                "authorizer": authorizer.username,
+            },
+            description=f"Documento {doc.number} anulado (autorizó: {authorizer.username})",
             request=request,
         )
         await self.db.commit()

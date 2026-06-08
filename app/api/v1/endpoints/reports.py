@@ -32,7 +32,8 @@ _STATUS_LABELS = {
     "pending": "Pendiente",
     "approved": "Aprobado",
     "rejected": "Rechazado",
-    "cancelled": "Anulado",
+    "cancelled": "Cancelado",
+    "voided": "Anulado",
 }
 
 _DOC_TYPE_LABELS = {

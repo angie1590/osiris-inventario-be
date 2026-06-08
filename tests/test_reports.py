@@ -3,6 +3,9 @@
 from io import BytesIO
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+from app.core.config import settings
 
 import pytest
 import pytest_asyncio
@@ -71,7 +74,9 @@ async def test_report_ingresos_json_date_only_includes_same_day(
     client: AsyncClient, admin_token: str, operator_token: str
 ):
     await _seed_ingreso(client, admin_token, operator_token)
-    today = _now().date().isoformat()
+    # Filter by the APP_TIMEZONE local day (matches how the API resolves
+    # date-only bounds), so the test is robust to the UTC/local-day boundary.
+    today = _now().astimezone(ZoneInfo(settings.APP_TIMEZONE)).date().isoformat()
     resp = await client.get(
         "/api/v1/reports/ingresos",
         params={"date_from": today, "date_to": today, "format": "json"},
