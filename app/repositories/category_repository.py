@@ -48,6 +48,55 @@ class CategoryRepository:
         )
         return int(result.scalar_one())
 
+    async def get_default_child(self, parent_id: int) -> Category | None:
+        result = await self.db.execute(
+            select(Category).where(
+                Category.parent_id == parent_id,
+                Category.is_default == True,
+                Category.is_active == True,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def reassign_active_products(self, from_category_id: int, to_category_id: int) -> int:
+        """Move all active products from one category to another. Returns count."""
+        from app.models.enums import ProductStatus
+        from app.models.product import Product
+        result = await self.db.execute(
+            update(Product)
+            .where(Product.category_id == from_category_id, Product.status == ProductStatus.active)
+            .values(category_id=to_category_id)
+        )
+        return result.rowcount or 0
+
+    async def list_default_categories_with_products(self) -> list[tuple[Category, int]]:
+        """Return (default_category, active_product_count) for active default
+        categories that still hold active products (pending recategorization)."""
+        from app.models.enums import ProductStatus
+        from app.models.product import Product
+        result = await self.db.execute(
+            select(Category, func.count(Product.id))
+            .join(Product, (Product.category_id == Category.id) & (Product.status == ProductStatus.active))
+            .where(Category.is_default == True, Category.is_active == True)
+            .group_by(Category.id)
+            .having(func.count(Product.id) > 0)
+        )
+        return [(row[0], int(row[1])) for row in result.all()]
+
+    async def count_active_products_with_stock(self, category_id: int) -> int:
+        from app.models.enums import ProductStatus
+        from app.models.product import Product
+        result = await self.db.execute(
+            select(func.count())
+            .select_from(Product)
+            .where(
+                Product.category_id == category_id,
+                Product.status == ProductStatus.active,
+                Product.stock_actual > 0,
+            )
+        )
+        return int(result.scalar_one())
+
     async def deactivate_products_in_category(self, category_id: int) -> int:
         """Soft-delete (deactivate) all active products of a category. Returns the count."""
         from app.models.enums import ProductStatus
@@ -99,9 +148,11 @@ class CategoryRepository:
         return all_attrs
 
     async def attribute_name_exists_in_hierarchy(self, category_id: int, name: str, exclude_id: int | None = None) -> bool:
+        # Normalize: case-insensitive and trimmed (Rule 8 & 9).
+        target = name.strip().lower()
         existing = await self.get_inherited_attributes(category_id)
         for item in existing:
-            if item["attr"].name.lower() == name.lower():
+            if item["attr"].name.strip().lower() == target:
                 if exclude_id and item["attr"].id == exclude_id:
                     continue
                 return True
@@ -111,21 +162,34 @@ class CategoryRepository:
         self, category_id: int, name: str, exclude_id: int | None = None
     ) -> bool:
         """True if any strict descendant category already has an active attribute
-        with this name (case-insensitive)."""
+        with this name (case-insensitive, trimmed)."""
         descendant_ids = [
             cid for cid in await self.get_descendant_category_ids(category_id) if cid != category_id
         ]
         if not descendant_ids:
             return False
+        target = name.strip().lower()
         q = select(CategoryAttribute.id).where(
             CategoryAttribute.category_id.in_(descendant_ids),
             CategoryAttribute.is_active == True,
-            func.lower(CategoryAttribute.name) == name.lower(),
+            func.lower(func.trim(CategoryAttribute.name)) == target,
         )
         if exclude_id:
             q = q.where(CategoryAttribute.id != exclude_id)
         result = await self.db.execute(q.limit(1))
         return result.scalar_one_or_none() is not None
+
+    async def active_attribute_names_in_subtree(self, category_id: int) -> dict[str, str]:
+        """Return {normalized_name: display_name} for active attributes in the
+        category and all its descendants."""
+        ids = await self.get_descendant_category_ids(category_id)  # includes self
+        result = await self.db.execute(
+            select(CategoryAttribute.name).where(
+                CategoryAttribute.category_id.in_(ids),
+                CategoryAttribute.is_active == True,
+            )
+        )
+        return {n.strip().lower(): n.strip() for n in result.scalars().all()}
 
     async def get_descendant_category_ids(self, category_id: int) -> list[int]:
         """Return all descendant category IDs (recursive)."""
@@ -151,6 +215,19 @@ class CategoryRepository:
             ).limit(1)
         )
         return result.scalar_one_or_none() is not None
+
+    async def products_with_attribute(self, category_ids: list[int], attr_name: str) -> list:
+        """Products (in the given categories) that store a value for attr_name."""
+        from app.models.product import Product
+        if not category_ids:
+            return []
+        result = await self.db.execute(
+            select(Product).where(
+                Product.category_id.in_(category_ids),
+                Product.custom_attributes.has_key(attr_name),  # type: ignore[attr-defined]
+            )
+        )
+        return list(result.scalars().all())
 
     async def get_active_attributes(self, category_id: int) -> list[CategoryAttribute]:
         result = await self.db.execute(

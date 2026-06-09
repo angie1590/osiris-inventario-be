@@ -14,6 +14,7 @@ class AttributeDataType(str, enum.Enum):
     date = "date"
     boolean = "boolean"
     select = "select"
+    catalog = "catalog"
 
 
 class ProductStatus(str, enum.Enum):

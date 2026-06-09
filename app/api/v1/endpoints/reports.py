@@ -203,12 +203,24 @@ async def _get_stock_quantity_mode(db: AsyncSession) -> str:
     return "decimal" if value == "decimal" else "integer"
 
 
+async def _get_bool_param(db: AsyncSession, key: str, default: bool = False) -> bool:
+    result = await db.execute(select(SystemParam).where(SystemParam.key == key))
+    param = result.scalar_one_or_none()
+    if not param:
+        return default
+    return str(param.value).strip().lower() in ("true", "1", "yes")
+
+
 @router.get("/settings")
 async def report_settings(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(_read_roles),
 ):
-    return {"stock_quantity_mode": await _get_stock_quantity_mode(db)}
+    return {
+        "stock_quantity_mode": await _get_stock_quantity_mode(db),
+        "internal_code_enabled": await _get_bool_param(db, "internal_code_enabled", default=True),
+        "isbn_required": await _get_bool_param(db, "isbn_required"),
+    }
 
 
 @router.get("/ingresos")
@@ -535,7 +547,7 @@ async def report_stock(
         ids = await cat_repo.get_descendant_category_ids(category_id)
         q = q.where(Product.category_id.in_(ids))
     if bajo_stock is True:
-        q = q.where(Product.stock_actual <= Product.stock_minimo)
+        q = q.where((Product.stock_minimo > 0) & (Product.stock_actual <= Product.stock_minimo))
     if cursor:
         q = q.where(Product.id > cursor)
     q = q.order_by(Product.id).limit(limit)
@@ -549,7 +561,7 @@ async def report_stock(
                 "name": p.name,
                 "stock_actual": float(p.stock_actual),
                 "stock_minimo": float(p.stock_minimo),
-                "bajo_stock": p.stock_actual <= p.stock_minimo,
+                "bajo_stock": p.stock_minimo > 0 and p.stock_actual <= p.stock_minimo,
                 "pvp": float(p.pvp),
             }
             for p in products
@@ -558,7 +570,7 @@ async def report_stock(
     rows = [
         [
             p.name,
-            "Sí" if p.stock_actual <= p.stock_minimo else "No",
+            "Sí" if (p.stock_minimo > 0 and p.stock_actual <= p.stock_minimo) else "No",
             float(p.stock_minimo),
             float(p.stock_actual),
             float(p.pvp),
@@ -862,7 +874,7 @@ async def report_consolidado(
     )
     bajo_stock_count = await db.execute(
         select(func.count(Product.id)).where(
-            Product.status == "active", Product.stock_actual <= Product.stock_minimo
+            Product.status == "active", Product.stock_minimo > 0, Product.stock_actual <= Product.stock_minimo
         )
     )
 

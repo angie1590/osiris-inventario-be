@@ -20,7 +20,7 @@ class ConflictError(AppError):
 
 
 class ForbiddenError(AppError):
-    def __init__(self, code: str = "INSUFFICIENT_PERMISSIONS", detail: str = "Insufficient permissions"):
+    def __init__(self, code: str = "INSUFFICIENT_PERMISSIONS", detail: str = "No tienes permiso para realizar esta acción."):
         super().__init__(code=code, detail=detail, status_code=status.HTTP_403_FORBIDDEN)
 
 

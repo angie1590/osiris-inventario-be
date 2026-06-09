@@ -46,6 +46,16 @@ INITIAL_PARAMS = [
         "integer",
         "Modo de cantidades de stock: 'integer' (enteros) o 'decimal' (decimales)",
     ),
+    (
+        "internal_code_enabled",
+        "true",
+        "Habilita el código interno alfanumérico de productos (búsqueda y formulario)",
+    ),
+    (
+        "isbn_required",
+        "false",
+        "Hace obligatorio el ISBN al crear/editar productos",
+    ),
 ]
 
 

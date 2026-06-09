@@ -1,6 +1,8 @@
 from app.models.enums import *  # noqa: F401, F403
 from app.models.user import User, RefreshToken  # noqa: F401
 from app.models.category import Category, CategoryAttribute  # noqa: F401
+from app.models.catalog import Catalog, CatalogValue  # noqa: F401
+from app.models.attribute_remap import PendingAttributeRemap  # noqa: F401
 from app.models.product import Product  # noqa: F401
 from app.models.system_param import SystemParam  # noqa: F401
 from app.models.inventory import DocumentSequence, InventoryDocument, InventoryDocumentLine, AuthorizationCode  # noqa: F401

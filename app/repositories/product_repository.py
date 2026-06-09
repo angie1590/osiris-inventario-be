@@ -30,13 +30,18 @@ class ProductRepository:
         if cursor:
             q = q.where(Product.id > cursor)
         if name:
-            q = q.where(Product.name.ilike(f"%{name}%"))
+            term = f"%{name}%"
+            q = q.where(
+                Product.name.ilike(term)
+                | Product.isbn.ilike(term)
+                | Product.codigo_interno.ilike(term)
+            )
         if category_ids:
             q = q.where(Product.category_id.in_(category_ids))
         if status:
             q = q.where(Product.status == status)
         if bajo_stock is True:
-            q = q.where(Product.stock_actual <= Product.stock_minimo)
+            q = q.where((Product.stock_minimo > 0) & (Product.stock_actual <= Product.stock_minimo))
         q = q.limit(limit)
         result = await self.db.execute(q)
         return list(result.scalars().all())

@@ -7,13 +7,13 @@ from app.models.enums import UserRole
 from app.models.user import User
 from app.schemas.category import (
     CategoryAttributeCreate, CategoryAttributeResponse, CategoryAttributeUpdate,
-    CategoryCreate, CategoryResponse, CategoryUpdate,
+    CategoryCreate, CategoryCreateResponse, CategoryResponse, CategoryUpdate,
 )
 from app.services.category_service import CategoryService
 
 router = APIRouter()
 
-_write_roles = require_role(UserRole.admin, UserRole.operator)
+_write_roles = require_role(UserRole.admin, UserRole.supervisor)
 _read_roles = require_role(UserRole.admin, UserRole.operator, UserRole.supervisor)
 
 
@@ -28,7 +28,7 @@ async def list_categories(
     return await svc.list_categories(limit=limit, cursor=cursor)
 
 
-@router.post("", response_model=CategoryResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=CategoryCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_category(
     body: CategoryCreate,
     request: Request,
@@ -36,7 +36,12 @@ async def create_category(
     current_user: User = Depends(_write_roles),
 ):
     svc = CategoryService(db)
-    return await svc.create_category(body.name, body.description, body.parent_id, current_user.id, current_user.username, request)
+    cat, products_moved = await svc.create_category(
+        body.name, body.description, body.parent_id, current_user.id, current_user.username, request
+    )
+    resp = CategoryCreateResponse.model_validate(cat)
+    resp.products_moved = products_moved
+    return resp
 
 
 @router.get("/{category_id}", response_model=CategoryResponse)
@@ -63,7 +68,16 @@ async def update_category(
     current_user: User = Depends(_write_roles),
 ):
     svc = CategoryService(db)
-    return await svc.update_category(category_id, body.name, body.description, current_user.id, current_user.username, request)
+    return await svc.update_category(
+        category_id,
+        body.name,
+        body.description,
+        current_user.id,
+        current_user.username,
+        request,
+        parent_id=body.parent_id,
+        parent_provided="parent_id" in body.model_fields_set,
+    )
 
 
 @router.delete("/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -72,7 +86,7 @@ async def delete_category(
     request: Request,
     delete_products: bool = False,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.admin)),
+    current_user: User = Depends(_write_roles),
 ):
     svc = CategoryService(db)
     await svc.delete_category(
@@ -100,6 +114,8 @@ async def get_category_attributes(
             data_type=item["attr"].data_type,
             is_required=item["attr"].is_required,
             select_options=item["attr"].select_options,
+            catalog_id=item["attr"].catalog_id,
+            allow_negative=item["attr"].allow_negative,
             is_active=item["attr"].is_active,
             inherited=item["inherited"],
         )
@@ -113,14 +129,14 @@ async def add_attribute(
     body: CategoryAttributeCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.admin)),
+    current_user: User = Depends(_write_roles),
 ):
     svc = CategoryService(db)
-    attr = await svc.add_attribute(category_id, body.name, body.data_type, body.is_required, body.select_options, current_user.id, current_user.username, request)
+    attr = await svc.add_attribute(category_id, body.name, body.data_type, body.is_required, body.select_options, current_user.id, current_user.username, request, catalog_id=body.catalog_id, allow_negative=body.allow_negative)
     return CategoryAttributeResponse(
         id=attr.id, category_id=attr.category_id, name=attr.name,
         data_type=attr.data_type, is_required=attr.is_required,
-        select_options=attr.select_options, is_active=attr.is_active, inherited=False,
+        select_options=attr.select_options, catalog_id=attr.catalog_id, allow_negative=attr.allow_negative, is_active=attr.is_active, inherited=False,
     )
 
 
@@ -131,14 +147,15 @@ async def update_attribute(
     body: CategoryAttributeUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.admin)),
+    current_user: User = Depends(_write_roles),
 ):
     svc = CategoryService(db)
-    attr = await svc.update_attribute(category_id, attr_id, body.name, body.data_type, body.is_required, body.select_options, current_user.id, current_user.username, request)
+    attr, remap_pending = await svc.update_attribute(category_id, attr_id, body.name, body.data_type, body.is_required, body.select_options, current_user.id, current_user.username, request, catalog_id=body.catalog_id, allow_negative=body.allow_negative)
     return CategoryAttributeResponse(
         id=attr.id, category_id=attr.category_id, name=attr.name,
         data_type=attr.data_type, is_required=attr.is_required,
-        select_options=attr.select_options, is_active=attr.is_active, inherited=False,
+        select_options=attr.select_options, catalog_id=attr.catalog_id, allow_negative=attr.allow_negative, is_active=attr.is_active, inherited=False,
+        remap_pending=remap_pending,
     )
 
 
@@ -148,14 +165,14 @@ async def deactivate_attribute(
     attr_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.admin)),
+    current_user: User = Depends(_write_roles),
 ):
     svc = CategoryService(db)
     attr = await svc.deactivate_attribute(category_id, attr_id, current_user.id, current_user.username, request)
     return CategoryAttributeResponse(
         id=attr.id, category_id=attr.category_id, name=attr.name,
         data_type=attr.data_type, is_required=attr.is_required,
-        select_options=attr.select_options, is_active=attr.is_active, inherited=False,
+        select_options=attr.select_options, catalog_id=attr.catalog_id, allow_negative=attr.allow_negative, is_active=attr.is_active, inherited=False,
     )
 
 
@@ -165,14 +182,14 @@ async def reactivate_attribute(
     attr_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.admin)),
+    current_user: User = Depends(_write_roles),
 ):
     svc = CategoryService(db)
     attr = await svc.reactivate_attribute(category_id, attr_id, current_user.id, current_user.username, request)
     return CategoryAttributeResponse(
         id=attr.id, category_id=attr.category_id, name=attr.name,
         data_type=attr.data_type, is_required=attr.is_required,
-        select_options=attr.select_options, is_active=attr.is_active, inherited=False,
+        select_options=attr.select_options, catalog_id=attr.catalog_id, allow_negative=attr.allow_negative, is_active=attr.is_active, inherited=False,
     )
 
 
@@ -182,7 +199,7 @@ async def delete_attribute(
     attr_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.admin)),
+    current_user: User = Depends(_write_roles),
 ):
     svc = CategoryService(db)
     await svc.delete_attribute(category_id, attr_id, current_user.id, current_user.username, request)

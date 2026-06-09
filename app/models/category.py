@@ -16,6 +16,9 @@ class Category(Base):
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id", ondelete="RESTRICT"), nullable=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Temporary "Sin clasificar" bucket auto-created when a parent with products
+    # gains a subcategory. Products here must be recategorized; cannot hold new ones.
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -34,6 +37,10 @@ class CategoryAttribute(Base):
     data_type: Mapped[AttributeDataType] = mapped_column(Enum(AttributeDataType), nullable=False)
     is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     select_options: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # Set when data_type == catalog: the master list this attribute draws from.
+    catalog_id: Mapped[int | None] = mapped_column(ForeignKey("catalogs.id", ondelete="RESTRICT"), nullable=True, index=True)
+    # For integer/decimal attributes: whether negative values are allowed.
+    allow_negative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

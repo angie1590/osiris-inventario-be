@@ -45,7 +45,10 @@ async def get_current_user(
 
     # Refresh inactivity TTL on every authenticated request
     from app.core.config import settings
-    result = await db.execute(select(SystemParam).where(SystemParam.key == "session_timeout_minutes"))
+
+    result = await db.execute(
+        select(SystemParam).where(SystemParam.key == "session_timeout_minutes")
+    )
     param = result.scalar_one_or_none()
     session_minutes = settings.ACCESS_TOKEN_EXPIRE_MINUTES
     if param:
@@ -66,12 +69,22 @@ async def get_current_user(
     return user
 
 
+_ROLE_LABELS = {
+    UserRole.admin: "Administrador",
+    UserRole.operator: "Operador",
+    UserRole.supervisor: "Supervisor",
+}
+
+
 def require_role(*roles: UserRole):
     """FastAPI dependency that enforces one of the given roles."""
 
     async def _check(user: User = Depends(get_current_user)) -> User:
         if user.role not in roles:
-            raise ForbiddenError()
+            labels = ", ".join(_ROLE_LABELS.get(r, r.value) for r in roles)
+            raise ForbiddenError(
+                detail=f"No tienes permiso para realizar esta acción. Requiere rol: {labels}."
+            )
         return user
 
     return _check
@@ -85,15 +98,33 @@ require_any_role = require_role(UserRole.admin, UserRole.operator, UserRole.supe
 
 async def require_company_configured(db: AsyncSession = Depends(get_db)) -> None:
     from app.repositories.company_repository import CompanyRepository
+
     company = await CompanyRepository(db).get()
     if not company or not (company.razon_social and company.ruc and company.email):
-        raise ValidationAppError("COMPANY_NOT_CONFIGURED", "Company configuration is incomplete")
+        raise ValidationAppError(
+            "COMPANY_NOT_CONFIGURED", "Company configuration is incomplete"
+        )
 
 
 async def get_stock_mode(db: AsyncSession = Depends(get_db)) -> str:
     """Return 'integer' or 'decimal' based on the stock_quantity_mode system param."""
     from sqlalchemy import select
     from app.models.system_param import SystemParam
-    result = await db.execute(select(SystemParam).where(SystemParam.key == "stock_quantity_mode"))
+
+    result = await db.execute(
+        select(SystemParam).where(SystemParam.key == "stock_quantity_mode")
+    )
     param = result.scalar_one_or_none()
     return param.value if param else "integer"
+
+
+async def get_isbn_required(db: AsyncSession = Depends(get_db)) -> bool:
+    """Whether ISBN is mandatory on products (isbn_required system param)."""
+    from sqlalchemy import select
+    from app.models.system_param import SystemParam
+
+    result = await db.execute(
+        select(SystemParam).where(SystemParam.key == "isbn_required")
+    )
+    param = result.scalar_one_or_none()
+    return bool(param and str(param.value).strip().lower() in ("true", "1", "yes"))

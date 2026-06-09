@@ -2,6 +2,7 @@ import secrets
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError, ValidationAppError
@@ -10,7 +11,7 @@ from app.models.product import Product
 from app.repositories.category_repository import CategoryRepository
 from app.repositories.product_repository import ProductRepository
 from app.services.audit_service import AuditService
-from app.services.category_service import _validate_attribute_value
+from app.services.category_service import CategoryService, _validate_attribute_value
 
 
 def _validate_stock_quantity(
@@ -51,12 +52,30 @@ class ProductService:
                 )
             if attr.name in provided:
                 value = provided[attr.name]
-                if not _validate_attribute_value(
+                if attr.data_type == AttributeDataType.catalog:
+                    from app.services.catalog_service import CatalogService
+                    allowed = await CatalogService(self.db).active_values(attr.catalog_id) if attr.catalog_id else []
+                    if str(value) not in allowed:
+                        raise ValidationAppError(
+                            "INVALID_ATTRIBUTE_VALUE",
+                            f"'{value}' no es un valor válido del catálogo para el atributo '{attr.name}'.",
+                        )
+                elif not _validate_attribute_value(
                     value, attr.data_type, attr.select_options
                 ):
                     raise ValidationAppError(
                         "INVALID_ATTRIBUTE_VALUE",
                         f"Invalid value for attribute '{attr.name}' (type: {attr.data_type.value})",
+                    )
+                elif (
+                    attr.data_type in (AttributeDataType.integer, AttributeDataType.decimal)
+                    and not getattr(attr, "allow_negative", False)
+                    and value not in (None, "")
+                    and float(str(value)) < 0
+                ):
+                    raise ValidationAppError(
+                        "INVALID_ATTRIBUTE_VALUE",
+                        f"El atributo '{attr.name}' no admite valores negativos.",
                     )
 
     async def list_products(
@@ -95,16 +114,28 @@ class ProductService:
         actor_name: str,
         request=None,
         stock_mode: str = "integer",
+        codigo_interno: str | None = None,
     ) -> Product:
         cat = await self.cat_repo.get_by_id(category_id)
         if not cat or not cat.is_active:
             raise NotFoundError("CATEGORY_NOT_FOUND", "Category not found or inactive")
+        if await self.cat_repo.has_active_children(category_id):
+            raise ConflictError(
+                "CATEGORY_NOT_LEAF",
+                "No se pueden asignar productos a una categoría con subcategorías. Elige una categoría hoja (más específica).",
+            )
+        if cat.is_default:
+            raise ConflictError(
+                "CATEGORY_IS_DEFAULT",
+                "La categoría 'Sin clasificar' es temporal. Asigna el producto a una subcategoría definitiva.",
+            )
 
         _validate_stock_quantity(stock_minimo, stock_mode, "stock_minimo")
         await self._validate_custom_attributes(category_id, custom_attributes)
 
         product = Product(
             isbn=isbn or self._auto_isbn(),
+            codigo_interno=(codigo_interno.strip() if codigo_interno and codigo_interno.strip() else None),
             name=name,
             description=description,
             category_id=category_id,
@@ -153,34 +184,66 @@ class ProductService:
         actor_name: str,
         request=None,
         stock_mode: str = "integer",
+        category_id: int | None = None,
+        category_provided: bool = False,
+        codigo_interno: str | None = None,
+        codigo_interno_provided: bool = False,
     ) -> Product:
         p = await self.repo.get_by_id(product_id)
         if not p:
             raise NotFoundError("PRODUCT_NOT_FOUND", "Product not found")
 
+        # Resolve the target category (may be reassigned) and validate it.
+        old_category_id = p.category_id
+        target_category_id = p.category_id
+        if category_provided and category_id is not None and category_id != p.category_id:
+            cat = await self.cat_repo.get_by_id(category_id)
+            if not cat or not cat.is_active:
+                raise NotFoundError("CATEGORY_NOT_FOUND", "La categoría seleccionada no existe o está inactiva.")
+            if await self.cat_repo.has_active_children(category_id):
+                raise ConflictError(
+                    "CATEGORY_NOT_LEAF",
+                    "No se pueden asignar productos a una categoría con subcategorías. Elige una categoría hoja.",
+                )
+            if cat.is_default:
+                raise ConflictError(
+                    "CATEGORY_IS_DEFAULT",
+                    "La categoría 'Sin clasificar' es temporal. Asigna el producto a una subcategoría definitiva.",
+                )
+            target_category_id = category_id
+
         if stock_minimo is not None:
             _validate_stock_quantity(stock_minimo, stock_mode, "stock_minimo")
         if custom_attributes is not None:
-            await self._validate_custom_attributes(p.category_id, custom_attributes)
+            await self._validate_custom_attributes(target_category_id, custom_attributes)
 
         previous = {
             "isbn": p.isbn,
             "name": p.name,
             "pvp": float(p.pvp),
             "stock_minimo": float(p.stock_minimo),
+            "category_id": p.category_id,
         }
         if isbn is not None:
             p.isbn = isbn
+        if codigo_interno_provided:
+            p.codigo_interno = codigo_interno.strip() if codigo_interno and codigo_interno.strip() else None
         if name is not None:
             p.name = name
         if description is not None:
             p.description = description
+        p.category_id = target_category_id
         if stock_minimo is not None:
             p.stock_minimo = stock_minimo
         if pvp is not None:
             p.pvp = pvp
         if custom_attributes is not None:
             p.custom_attributes = custom_attributes
+
+        # If the product left a "Sin clasificar" default bucket, drop the bucket
+        # once it no longer holds active products.
+        if target_category_id != old_category_id:
+            await CategoryService(self.db).cleanup_default_if_empty(old_category_id)
 
         await self.audit.log(
             AuditAction.UPDATE,
@@ -203,12 +266,34 @@ class ProductService:
         actor_id: int,
         actor_name: str,
         request=None,
+        category_id: int | None = None,
     ) -> Product:
         p = await self.repo.get_by_id(product_id)
         if not p:
             raise NotFoundError("PRODUCT_NOT_FOUND", "Product not found")
 
-        previous = {"status": p.status.value}
+        previous = {"status": p.status.value, "category_id": p.category_id}
+
+        # Reactivating: the product's category must be active. If it was deleted
+        # (e.g. via category cascade), a new active category must be supplied to
+        # avoid a dangling reference.
+        if status == ProductStatus.active:
+            cat = await self.cat_repo.get_by_id(p.category_id)
+            if not cat or not cat.is_active:
+                if category_id is None:
+                    raise ConflictError(
+                        "PRODUCT_CATEGORY_INACTIVE",
+                        "El producto pertenece a una categoría eliminada. Asígnale una categoría activa para reactivarlo.",
+                    )
+                newcat = await self.cat_repo.get_by_id(category_id)
+                if not newcat or not newcat.is_active:
+                    raise NotFoundError("CATEGORY_NOT_FOUND", "La categoría seleccionada no existe o está inactiva.")
+                if await self.cat_repo.has_active_children(category_id):
+                    raise ConflictError("CATEGORY_NOT_LEAF", "No se pueden asignar productos a una categoría con subcategorías. Elige una categoría hoja.")
+                if newcat.is_default:
+                    raise ConflictError("CATEGORY_IS_DEFAULT", "La categoría 'Sin clasificar' es temporal. Asigna el producto a una subcategoría definitiva.")
+                p.category_id = category_id
+
         p.status = status
 
         await self.audit.log(
@@ -225,3 +310,53 @@ class ProductService:
         await self.db.commit()
         await self.db.refresh(p)
         return p
+
+    async def list_pending_recategorization(self) -> list[Product]:
+        """Active products sitting in a 'Sin clasificar' default category."""
+        from app.models.category import Category
+        result = await self.db.execute(
+            select(Product)
+            .join(Category, Category.id == Product.category_id)
+            .where(
+                Category.is_default == True,
+                Category.is_active == True,
+                Product.status == ProductStatus.active,
+            )
+            .order_by(Product.category_id, Product.id)
+        )
+        return list(result.scalars().all())
+
+    async def recategorize(self, assignments, actor_id: int, actor_name: str, request=None) -> int:
+        """Bulk-reassign products out of default buckets into final leaf
+        categories, then drop emptied default buckets."""
+        affected_defaults: set[int] = set()
+        count = 0
+        for a in assignments:
+            p = await self.repo.get_by_id(a.product_id)
+            if not p:
+                raise NotFoundError("PRODUCT_NOT_FOUND", f"El producto {a.product_id} no existe.")
+            cat = await self.cat_repo.get_by_id(a.category_id)
+            if not cat or not cat.is_active:
+                raise NotFoundError("CATEGORY_NOT_FOUND", "La categoría seleccionada no existe o está inactiva.")
+            if await self.cat_repo.has_active_children(a.category_id):
+                raise ConflictError("CATEGORY_NOT_LEAF", "No se pueden asignar productos a una categoría con subcategorías. Elige una categoría hoja.")
+            if cat.is_default:
+                raise ConflictError("CATEGORY_IS_DEFAULT", "La categoría 'Sin clasificar' es temporal. Asigna el producto a una subcategoría definitiva.")
+            old = p.category_id
+            if old == a.category_id:
+                continue
+            p.category_id = a.category_id
+            affected_defaults.add(old)
+            count += 1
+            await self.audit.log(
+                AuditAction.UPDATE, user_id=actor_id, username=actor_name,
+                entity_type="product", entity_id=p.id,
+                previous={"category_id": old}, new={"category_id": a.category_id},
+                description="Recategorize product", request=request,
+            )
+
+        cat_svc = CategoryService(self.db)
+        for cid in affected_defaults:
+            await cat_svc.cleanup_default_if_empty(cid)
+        await self.db.commit()
+        return count

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import get_stock_mode, require_role
+from app.core.deps import get_isbn_required, get_stock_mode, require_role
 from app.models.enums import ProductStatus, UserRole
 from app.models.user import User
 from app.schemas.product import (
@@ -10,6 +10,7 @@ from app.schemas.product import (
     ProductResponse,
     ProductStatusUpdate,
     ProductUpdate,
+    RecategorizeRequest,
 )
 from app.services.product_service import ProductService
 
@@ -26,6 +27,7 @@ def _to_response(p) -> dict:
             for c in [
                 "id",
                 "isbn",
+                "codigo_interno",
                 "name",
                 "description",
                 "category_id",
@@ -38,7 +40,7 @@ def _to_response(p) -> dict:
                 "updated_at",
             ]
         },
-        "bajo_stock": p.stock_actual <= p.stock_minimo,
+        "bajo_stock": p.stock_minimo > 0 and p.stock_actual <= p.stock_minimo,
     }
 
 
@@ -72,7 +74,11 @@ async def create_product(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(_write_roles),
     stock_mode: str = Depends(get_stock_mode),
+    isbn_required: bool = Depends(get_isbn_required),
 ):
+    if isbn_required and not (body.isbn and body.isbn.strip()):
+        from app.core.exceptions import ValidationAppError
+        raise ValidationAppError("ISBN_REQUIRED", "El ISBN es obligatorio.")
     svc = ProductService(db)
     p = await svc.create_product(
         body.isbn,
@@ -86,8 +92,30 @@ async def create_product(
         current_user.username,
         request,
         stock_mode=stock_mode,
+        codigo_interno=body.codigo_interno,
     )
     return _to_response(p)
+
+
+@router.get("/pending-recategorization", response_model=list[ProductResponse])
+async def list_pending_recategorization(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    svc = ProductService(db)
+    return [_to_response(p) for p in await svc.list_pending_recategorization()]
+
+
+@router.post("/recategorize", response_model=dict)
+async def recategorize_products(
+    body: RecategorizeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_write_roles),
+):
+    svc = ProductService(db)
+    count = await svc.recategorize(body.assignments, current_user.id, current_user.username, request)
+    return {"recategorized": count}
 
 
 @router.get("/{product_id}", response_model=ProductResponse)
@@ -123,6 +151,10 @@ async def update_product(
         current_user.username,
         request,
         stock_mode=stock_mode,
+        category_id=body.category_id,
+        category_provided="category_id" in body.model_fields_set,
+        codigo_interno=body.codigo_interno,
+        codigo_interno_provided="codigo_interno" in body.model_fields_set,
     )
     return _to_response(p)
 
@@ -137,6 +169,7 @@ async def update_product_status(
 ):
     svc = ProductService(db)
     p = await svc.update_status(
-        product_id, body.status, current_user.id, current_user.username, request
+        product_id, body.status, current_user.id, current_user.username, request,
+        category_id=body.category_id,
     )
     return _to_response(p)
