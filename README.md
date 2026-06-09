@@ -109,6 +109,70 @@ pytest --cov=app --cov-report=html
 python -m scripts.create_partitions
 ```
 
+## Ejecutar Todo Con Docker (Backend + Frontend)
+
+Esto levanta en un solo paso: PostgreSQL, Redis, API y Frontend.
+
+### Requisito de carpetas
+
+El archivo `docker-compose.full.yml` asume esta estructura (carpetas hermanas):
+
+```text
+.../tu-carpeta/
+  osiris-inventario-be/
+  osiris-inventario-fe/
+```
+
+### macOS / Linux
+
+```bash
+cd osiris-inventario-be
+chmod +x start-docker.sh stop-docker.sh
+./start-docker.sh
+```
+
+Para detener:
+
+```bash
+./stop-docker.sh
+```
+
+### Windows (PowerShell)
+
+```powershell
+cd osiris-inventario-be
+./start-docker.ps1
+```
+
+Para detener:
+
+```powershell
+./stop-docker.ps1
+```
+
+### Windows (CMD o doble clic)
+
+```bat
+cd osiris-inventario-be
+start-docker.bat
+```
+
+Para detener:
+
+```bat
+stop-docker.bat
+```
+
+Tambien puedes ejecutar directamente con doble clic sobre:
+- `start-docker.bat`
+- `stop-docker.bat`
+
+### URLs
+
+- Frontend: http://localhost:5173
+- API: http://localhost:8000
+- OpenAPI: http://localhost:8000/docs
+
 ## Arquitectura
 
 ```
