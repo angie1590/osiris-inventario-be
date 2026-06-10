@@ -9,8 +9,34 @@ if not exist "%COMPOSE_FILE%" (
   exit /b 1
 )
 
+docker --version >nul 2>&1
+if errorlevel 1 (
+  echo Docker no esta instalado o no esta en el PATH.
+  exit /b 1
+)
+
+docker compose version >nul 2>&1
+if errorlevel 1 (
+  echo Docker Compose no esta disponible.
+  exit /b 1
+)
+
+echo Reinicio limpio de OSIRIS: eliminando contenedores y volumenes del proyecto...
+docker compose -f "%COMPOSE_FILE%" down --remove-orphans --volumes
+if errorlevel 1 exit /b 1
+
 echo Levantando OSIRIS (api + web + postgres + redis)...
 docker compose -f "%COMPOSE_FILE%" up -d --build
+if errorlevel 1 exit /b 1
+
+echo.
+echo Ejecutando migraciones...
+docker compose -f "%COMPOSE_FILE%" exec -T api alembic upgrade head
+if errorlevel 1 exit /b 1
+
+echo.
+echo Creando datos iniciales (admin + parametros)...
+docker compose -f "%COMPOSE_FILE%" exec -T api python -m scripts.seed
 if errorlevel 1 exit /b 1
 
 echo.
@@ -18,5 +44,7 @@ echo Listo.
 echo Frontend: http://localhost:5173
 echo API:      http://localhost:8000
 echo Docs API: http://localhost:8000/docs
+echo Usuario admin: admin
+echo Clave inicial: Admin@12345!
 
 exit /b 0
