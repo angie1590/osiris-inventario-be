@@ -93,6 +93,12 @@ docker compose exec api python -m scripts.reset_admin_password
 docker compose -f docker-compose.full.yml exec api python -m scripts.reset_admin_password
 ```
 
+> Importante: tras un `git pull`, reconstruye la imagen (`up -d --build`) antes de
+> ejecutar el script. La carpeta `scripts/` no se monta como volumen, por lo que un
+> contenedor antiguo no verá los scripts nuevos. El script crea el admin si no existe,
+> reactiva la cuenta, restablece la clave y verifica el hash (imprime `Verificacion de
+contrasena: OK`).
+
 ## Comandos útiles
 
 ```bash
