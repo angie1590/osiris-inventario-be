@@ -63,6 +63,20 @@ if errorlevel 1 (
 )
 
 echo.
+echo Verificando que el frontend (web) este corriendo...
+docker compose -f "%COMPOSE_FILE%" ps web | findstr /I "Up" >nul 2>&1
+if errorlevel 1 (
+  echo El contenedor web no esta corriendo. Reintentando...
+  docker compose -f "%COMPOSE_FILE%" up -d --build web
+  timeout /t 3 /nobreak >nul
+  docker compose -f "%COMPOSE_FILE%" ps web | findstr /I "Up" >nul 2>&1
+  if errorlevel 1 (
+    echo El frontend no pudo iniciarse. Revisa: docker compose -f "%COMPOSE_FILE%" logs web
+    exit /b 1
+  )
+)
+
+echo.
 echo Listo.
 echo Frontend: http://localhost:5173
 echo API:      http://localhost:8000
