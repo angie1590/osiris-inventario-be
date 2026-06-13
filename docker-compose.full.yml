@@ -33,6 +33,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       DATABASE_URL: postgresql+asyncpg://osiris:osiris_dev_pass@postgres:5432/osiris_inventario
       REDIS_URL: redis://redis:6379/0
@@ -49,6 +50,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else sys.exit(1)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
 
   web:
     build:
@@ -60,7 +73,7 @@ services:
       VITE_API_PROXY_TARGET: http://api:8000
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   postgres_data:
