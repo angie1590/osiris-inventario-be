@@ -10,7 +10,10 @@ RUN poetry install --no-interaction --no-ansi --no-root
 
 COPY . .
 
-RUN chmod +x scripts/entrypoint.sh
+# Normaliza el entrypoint a LF (evita fallos si el repo se clono con CRLF en Windows)
+# y lo hace ejecutable.
+RUN sed -i 's/\r$//' scripts/entrypoint.sh && \
+    chmod +x scripts/entrypoint.sh
 
 ENTRYPOINT ["scripts/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
