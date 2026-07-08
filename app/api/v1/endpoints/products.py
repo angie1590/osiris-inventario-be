@@ -50,6 +50,7 @@ async def list_products(
     cursor: int | None = None,
     name: str | None = None,
     category_id: int | None = None,
+    include_descendants: bool = True,
     status: ProductStatus | None = None,
     bajo_stock: bool | None = None,
     db: AsyncSession = Depends(get_db),
@@ -61,6 +62,7 @@ async def list_products(
         cursor=cursor,
         name=name,
         category_id=category_id,
+        include_descendants=include_descendants,
         status=status,
         bajo_stock=bajo_stock,
     )

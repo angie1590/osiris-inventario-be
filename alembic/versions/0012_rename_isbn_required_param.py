@@ -1,7 +1,7 @@
 """Rename isbn_required param to barcode_required
 
 Revision ID: 0012_rename_isbn_required_param
-Revises: 0011_attr_negative_and_params
+Revises: 0011
 Create Date: 2026-07-08
 """
 
@@ -11,7 +11,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "0012_rename_isbn_required_param"
-down_revision: Union[str, None] = "0011_attr_negative_and_params"
+down_revision: Union[str, None] = "0011"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

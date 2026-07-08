@@ -84,12 +84,16 @@ class ProductService:
         cursor: int | None = None,
         name: str | None = None,
         category_id: int | None = None,
+        include_descendants: bool = True,
         status: ProductStatus | None = None,
         bajo_stock: bool | None = None,
     ) -> list[Product]:
         category_ids = None
         if category_id:
-            category_ids = await self.cat_repo.get_descendant_category_ids(category_id)
+            if include_descendants:
+                category_ids = await self.cat_repo.get_descendant_category_ids(category_id)
+            else:
+                category_ids = [category_id]
 
         products = await self.repo.list(
             limit=limit,

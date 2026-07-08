@@ -95,6 +95,46 @@ async def test_product_stock_readonly(client: AsyncClient, operator_token: str, 
 
 
 @pytest.mark.asyncio
+async def test_list_products_can_exclude_descendants(client: AsyncClient, admin_token: str):
+    h = {"Authorization": f"Bearer {admin_token}"}
+
+    parent = await client.post("/api/v1/categories", json={"name": "Parent Filter"}, headers=h)
+    parent_id = parent.json()["id"]
+    child = await client.post(
+        "/api/v1/categories",
+        json={"name": "Child Filter", "parent_id": parent_id},
+        headers=h,
+    )
+    child_id = child.json()["id"]
+
+    # Product exists only in child category.
+    created = await client.post(
+        "/api/v1/products",
+        json={"name": "Only Child Product", "category_id": child_id, "pvp": "5.00"},
+        headers=h,
+    )
+    assert created.status_code == 201
+    child_product_id = created.json()["id"]
+
+    # Backward-compatible default: include descendants when filtering by parent.
+    with_descendants = await client.get(
+        f"/api/v1/products?category_id={parent_id}",
+        headers=h,
+    )
+    assert with_descendants.status_code == 200
+    with_descendants_ids = {p["id"] for p in with_descendants.json()}
+    assert child_product_id in with_descendants_ids
+
+    # New behavior: only direct products in the selected category.
+    direct_only = await client.get(
+        f"/api/v1/products?category_id={parent_id}&include_descendants=false",
+        headers=h,
+    )
+    assert direct_only.status_code == 200
+    assert direct_only.json() == []
+
+
+@pytest.mark.asyncio
 async def test_create_product_with_required_attribute(client: AsyncClient, admin_token: str, operator_token: str):
     cat = await client.post("/api/v1/categories", json={"name": "Attr Required Cat"}, headers={"Authorization": f"Bearer {admin_token}"})
     cat_id = cat.json()["id"]
