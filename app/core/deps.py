@@ -119,9 +119,19 @@ async def get_stock_mode(db: AsyncSession = Depends(get_db)) -> str:
 
 
 async def get_isbn_required(db: AsyncSession = Depends(get_db)) -> bool:
-    """Whether ISBN is mandatory on products (isbn_required system param)."""
+    """Whether barcode/ISBN is mandatory on products.
+
+    Backward compatible with legacy key `isbn_required`.
+    """
     from sqlalchemy import select
     from app.models.system_param import SystemParam
+
+    result = await db.execute(
+        select(SystemParam).where(SystemParam.key == "barcode_required")
+    )
+    param = result.scalar_one_or_none()
+    if param is not None:
+        return bool(str(param.value).strip().lower() in ("true", "1", "yes"))
 
     result = await db.execute(
         select(SystemParam).where(SystemParam.key == "isbn_required")

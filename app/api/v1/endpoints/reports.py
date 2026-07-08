@@ -216,10 +216,17 @@ async def report_settings(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(_read_roles),
 ):
+    barcode_required = await _get_bool_param(
+        db,
+        "barcode_required",
+        default=await _get_bool_param(db, "isbn_required"),
+    )
     return {
         "stock_quantity_mode": await _get_stock_quantity_mode(db),
         "internal_code_enabled": await _get_bool_param(db, "internal_code_enabled", default=True),
-        "isbn_required": await _get_bool_param(db, "isbn_required"),
+        "barcode_required": barcode_required,
+        # Backward compatibility for older frontends.
+        "isbn_required": barcode_required,
     }
 
 

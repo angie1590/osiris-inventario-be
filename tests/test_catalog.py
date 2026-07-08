@@ -514,12 +514,12 @@ async def test_isbn_required_param(client: AsyncClient, admin_token: str, db_ses
     from sqlalchemy import select
     h = {"Authorization": f"Bearer {admin_token}"}
     cat = (await client.post("/api/v1/categories", json={"name": "IsbnCat"}, headers=h)).json()
-    # enable isbn_required
-    param = (await db_session.execute(select(SystemParam).where(SystemParam.key == "isbn_required"))).scalar_one_or_none()
+    # enable barcode_required
+    param = (await db_session.execute(select(SystemParam).where(SystemParam.key == "barcode_required"))).scalar_one_or_none()
     if param:
         param.value = "true"
     else:
-        db_session.add(SystemParam(key="isbn_required", value="true", description="x"))
+        db_session.add(SystemParam(key="barcode_required", value="true", description="x"))
     await db_session.commit()
 
     bad = await client.post("/api/v1/products", json={"name": "NoIsbn", "category_id": cat["id"], "pvp": "5.00"}, headers=h)

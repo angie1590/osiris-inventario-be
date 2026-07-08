@@ -78,7 +78,7 @@ async def create_product(
 ):
     if isbn_required and not (body.isbn and body.isbn.strip()):
         from app.core.exceptions import ValidationAppError
-        raise ValidationAppError("ISBN_REQUIRED", "El ISBN es obligatorio.")
+        raise ValidationAppError("ISBN_REQUIRED", "El código de barras es obligatorio.")
     svc = ProductService(db)
     p = await svc.create_product(
         body.isbn,

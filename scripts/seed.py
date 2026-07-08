@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.core.database import AsyncSessionLocal
 from app.core.security import hash_password
@@ -52,9 +52,9 @@ INITIAL_PARAMS = [
         "Habilita el código interno alfanumérico de productos (búsqueda y formulario)",
     ),
     (
-        "isbn_required",
+        "barcode_required",
         "false",
-        "Hace obligatorio el ISBN al crear/editar productos",
+        "Hace obligatorio el codigo de barras al crear/editar productos",
     ),
 ]
 
@@ -64,6 +64,14 @@ async def seed() -> None:
         # Remove deprecated params that should no longer be configurable.
         await session.execute(
             delete(SystemParam).where(SystemParam.key == "doc_number_prefix")
+        )
+        await session.execute(
+            update(SystemParam)
+            .where(SystemParam.key == "isbn_required")
+            .values(
+                key="barcode_required",
+                description="Hace obligatorio el codigo de barras al crear/editar productos",
+            )
         )
 
         # Create admin user if it doesn't exist
