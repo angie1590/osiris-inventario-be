@@ -1,4 +1,5 @@
 import hashlib
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -400,7 +401,13 @@ class InventoryService:
                 "Approver does not have a configured approval code",
             )
 
-        if not verify_password(raw_code.strip().upper(), approver.approval_code_hash):
+        normalized_code = raw_code.strip()
+        if not re.fullmatch(r"\d{4}", normalized_code):
+            raise ValidationAppError(
+                "APPROVAL_CODE_INVALID", "Approval code is invalid"
+            )
+
+        if not verify_password(normalized_code, approver.approval_code_hash):
             raise ValidationAppError(
                 "APPROVAL_CODE_INVALID", "Approval code is invalid"
             )
@@ -500,7 +507,10 @@ class InventoryService:
         if not authorizer_pin or not authorizer_pin.strip():
             raise ValidationAppError("VOID_PIN_REQUIRED", "Se requiere el PIN de un supervisor o administrador")
 
-        pin = authorizer_pin.strip().upper()
+        pin = authorizer_pin.strip()
+        if not re.fullmatch(r"\d{4}", pin):
+            raise ValidationAppError("VOID_PIN_INVALID", "PIN de autorización inválido")
+
         result = await self.db.execute(
             select(User).where(
                 User.is_active.is_(True),
