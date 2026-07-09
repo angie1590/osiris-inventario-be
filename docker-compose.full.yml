@@ -71,6 +71,11 @@ services:
       - "5173:5173"
     environment:
       VITE_API_PROXY_TARGET: http://api:8000
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "300"
+    volumes:
+      - ../osiris-inventario-fe:/app
+      - /app/node_modules
     depends_on:
       api:
         condition: service_healthy
