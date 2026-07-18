@@ -81,6 +81,7 @@ async def create_product(
 ):
     if isbn_required and not (body.isbn and body.isbn.strip()):
         from app.core.exceptions import ValidationAppError
+
         raise ValidationAppError("ISBN_REQUIRED", "El código de barras es obligatorio.")
     svc = ProductService(db)
     p = await svc.create_product(
@@ -118,7 +119,9 @@ async def recategorize_products(
     current_user: User = Depends(_write_roles),
 ):
     svc = ProductService(db)
-    count = await svc.recategorize(body.assignments, current_user.id, current_user.username, request)
+    count = await svc.recategorize(
+        body.assignments, current_user.id, current_user.username, request
+    )
     return {"recategorized": count}
 
 
@@ -175,7 +178,11 @@ async def update_product_status(
 ):
     svc = ProductService(db)
     p = await svc.update_status(
-        product_id, body.status, current_user.id, current_user.username, request,
+        product_id,
+        body.status,
+        current_user.id,
+        current_user.username,
+        request,
         category_id=body.category_id,
     )
     return _to_response(p)

@@ -25,7 +25,9 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     # Optional human-facing alphanumeric internal code (e.g. L010263). Whether it
     # is used is controlled by the 'internal_code_enabled' system param.
-    codigo_interno: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    codigo_interno: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, index=True
+    )
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     photo: Mapped[str | None] = mapped_column(Text, nullable=True)
     category_id: Mapped[int] = mapped_column(

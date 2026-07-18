@@ -85,7 +85,9 @@ class CompanyConfigCreate(BaseModel):
     telefono: str | None = None
     logo: str | None = None
 
-    @field_validator("razon_social", "nombre_comercial", "direccion", "email", mode="before")
+    @field_validator(
+        "razon_social", "nombre_comercial", "direccion", "email", mode="before"
+    )
     @classmethod
     def normalize_text(cls, v: str | None) -> str | None:
         if v is None:
@@ -152,7 +154,9 @@ class CompanyConfigUpdate(BaseModel):
     telefono: str | None = None
     logo: str | None = None
 
-    @field_validator("razon_social", "nombre_comercial", "direccion", "email", mode="before")
+    @field_validator(
+        "razon_social", "nombre_comercial", "direccion", "email", mode="before"
+    )
     @classmethod
     def normalize_text(cls, v: str | None) -> str | None:
         if v is None:

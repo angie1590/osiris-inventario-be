@@ -483,17 +483,25 @@ class InventoryService:
         await self.db.commit()
         return await self.repo.get_by_id(doc.id)
 
-    def _void_stock_delta(self, doc: InventoryDocument, line: InventoryDocumentLine) -> Decimal:
+    def _void_stock_delta(
+        self, doc: InventoryDocument, line: InventoryDocumentLine
+    ) -> Decimal:
         """Stock delta that REVERSES the document's original effect on stock."""
         if doc.doc_type == DocumentType.IN:
             return -line.quantity
         if doc.doc_type in (DocumentType.EG, DocumentType.BI):
             return line.quantity
         if doc.doc_type == DocumentType.AI:
-            return -line.quantity if doc.adjust_type == AdjustType.increment else line.quantity
+            return (
+                -line.quantity
+                if doc.adjust_type == AdjustType.increment
+                else line.quantity
+            )
         return Decimal("0")
 
-    async def _resolve_void_authorizer(self, actor: User, authorizer_pin: str | None) -> User:
+    async def _resolve_void_authorizer(
+        self, actor: User, authorizer_pin: str | None
+    ) -> User:
         """Resolve who authorizes the void.
 
         Admin/supervisor authorize themselves (no PIN). Operators must supply
@@ -503,9 +511,14 @@ class InventoryService:
         if actor.role in (UserRole.admin, UserRole.supervisor):
             return actor
         if actor.role != UserRole.operator:
-            raise ValidationAppError("VOID_ROLE_FORBIDDEN", "No autorizado para anular documentos")
+            raise ValidationAppError(
+                "VOID_ROLE_FORBIDDEN", "No autorizado para anular documentos"
+            )
         if not authorizer_pin or not authorizer_pin.strip():
-            raise ValidationAppError("VOID_PIN_REQUIRED", "Se requiere el PIN de un supervisor o administrador")
+            raise ValidationAppError(
+                "VOID_PIN_REQUIRED",
+                "Se requiere el PIN de un supervisor o administrador",
+            )
 
         pin = authorizer_pin.strip().upper()
         if not re.fullmatch(r"[A-Z0-9]{8}", pin):
@@ -570,7 +583,9 @@ class InventoryService:
 
         # Reverse stock (opposite of original delta).
         for line in doc.lines:
-            await self.product_repo.update_stock(line.product_id, self._void_stock_delta(doc, line))
+            await self.product_repo.update_stock(
+                line.product_id, self._void_stock_delta(doc, line)
+            )
 
         doc.status = DocumentStatus.voided
         doc.authorized_by = authorizer.id

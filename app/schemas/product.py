@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.enums import ProductStatus
 
-
 _ALLOWED_IMAGE_MIME_TYPES = {
     "image/png",
     "image/jpeg",
@@ -57,7 +56,9 @@ class ProductBase(BaseModel):
             return None
         if _is_valid_image_data_url(value) or _is_valid_image_url(value):
             return value
-        raise ValueError("La foto debe ser PNG, JPG, JPEG o HEIC, o una URL directa a una imagen válida")
+        raise ValueError(
+            "La foto debe ser PNG, JPG, JPEG o HEIC, o una URL directa a una imagen válida"
+        )
 
 
 class ProductCreate(ProductBase):

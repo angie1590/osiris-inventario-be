@@ -66,12 +66,16 @@ class ProductService:
             needs_get = (
                 not responses
                 or responses[-1].status_code >= 400
-                or not self._is_allowed_photo_content_type(responses[-1].headers.get("content-type"))
+                or not self._is_allowed_photo_content_type(
+                    responses[-1].headers.get("content-type")
+                )
             )
 
             if needs_get:
                 try:
-                    responses.append(await client.get(photo, headers={"Range": "bytes=0-0"}))
+                    responses.append(
+                        await client.get(photo, headers={"Range": "bytes=0-0"})
+                    )
                 except httpx.HTTPError:
                     # Some CDNs block bots/range requests; keep validation best-
                     # effort and rely on schema/url-format checks.
@@ -90,7 +94,9 @@ class ProductService:
             raise ValidationAppError(
                 "INVALID_PHOTO_URL",
                 "La URL debe corresponder a una imagen PNG, JPG, JPEG o HEIC.",
-                field_errors={"photo": "La URL debe corresponder a una imagen PNG, JPG, JPEG o HEIC."},
+                field_errors={
+                    "photo": "La URL debe corresponder a una imagen PNG, JPG, JPEG o HEIC."
+                },
             )
 
     async def _validate_custom_attributes(
@@ -110,7 +116,12 @@ class ProductService:
                 value = provided[attr.name]
                 if attr.data_type == AttributeDataType.catalog:
                     from app.services.catalog_service import CatalogService
-                    allowed = await CatalogService(self.db).active_values(attr.catalog_id) if attr.catalog_id else []
+
+                    allowed = (
+                        await CatalogService(self.db).active_values(attr.catalog_id)
+                        if attr.catalog_id
+                        else []
+                    )
                     if str(value) not in allowed:
                         raise ValidationAppError(
                             "INVALID_ATTRIBUTE_VALUE",
@@ -124,7 +135,8 @@ class ProductService:
                         f"Invalid value for attribute '{attr.name}' (type: {attr.data_type.value})",
                     )
                 elif (
-                    attr.data_type in (AttributeDataType.integer, AttributeDataType.decimal)
+                    attr.data_type
+                    in (AttributeDataType.integer, AttributeDataType.decimal)
                     and not getattr(attr, "allow_negative", False)
                     and value not in (None, "")
                     and float(str(value)) < 0
@@ -147,7 +159,9 @@ class ProductService:
         category_ids = None
         if category_id:
             if include_descendants:
-                category_ids = await self.cat_repo.get_descendant_category_ids(category_id)
+                category_ids = await self.cat_repo.get_descendant_category_ids(
+                    category_id
+                )
             else:
                 category_ids = [category_id]
 
@@ -197,7 +211,11 @@ class ProductService:
 
         product = Product(
             isbn=isbn or self._auto_isbn(),
-            codigo_interno=(codigo_interno.strip() if codigo_interno and codigo_interno.strip() else None),
+            codigo_interno=(
+                codigo_interno.strip()
+                if codigo_interno and codigo_interno.strip()
+                else None
+            ),
             name=name,
             description=description,
             photo=photo,
@@ -261,10 +279,17 @@ class ProductService:
         # Resolve the target category (may be reassigned) and validate it.
         old_category_id = p.category_id
         target_category_id = p.category_id
-        if category_provided and category_id is not None and category_id != p.category_id:
+        if (
+            category_provided
+            and category_id is not None
+            and category_id != p.category_id
+        ):
             cat = await self.cat_repo.get_by_id(category_id)
             if not cat or not cat.is_active:
-                raise NotFoundError("CATEGORY_NOT_FOUND", "La categoría seleccionada no existe o está inactiva.")
+                raise NotFoundError(
+                    "CATEGORY_NOT_FOUND",
+                    "La categoría seleccionada no existe o está inactiva.",
+                )
             if await self.cat_repo.has_active_children(category_id):
                 raise ConflictError(
                     "CATEGORY_NOT_LEAF",
@@ -282,7 +307,9 @@ class ProductService:
         if photo_provided:
             await self._validate_photo_url(photo)
         if custom_attributes is not None:
-            await self._validate_custom_attributes(target_category_id, custom_attributes)
+            await self._validate_custom_attributes(
+                target_category_id, custom_attributes
+            )
 
         previous = {
             "isbn": p.isbn,
@@ -295,7 +322,11 @@ class ProductService:
         if isbn is not None:
             p.isbn = isbn
         if codigo_interno_provided:
-            p.codigo_interno = codigo_interno.strip() if codigo_interno and codigo_interno.strip() else None
+            p.codigo_interno = (
+                codigo_interno.strip()
+                if codigo_interno and codigo_interno.strip()
+                else None
+            )
         if name is not None:
             p.name = name
         if description is not None:
@@ -357,11 +388,20 @@ class ProductService:
                     )
                 newcat = await self.cat_repo.get_by_id(category_id)
                 if not newcat or not newcat.is_active:
-                    raise NotFoundError("CATEGORY_NOT_FOUND", "La categoría seleccionada no existe o está inactiva.")
+                    raise NotFoundError(
+                        "CATEGORY_NOT_FOUND",
+                        "La categoría seleccionada no existe o está inactiva.",
+                    )
                 if await self.cat_repo.has_active_children(category_id):
-                    raise ConflictError("CATEGORY_NOT_LEAF", "No se pueden asignar productos a una categoría con subcategorías. Elige una categoría hoja.")
+                    raise ConflictError(
+                        "CATEGORY_NOT_LEAF",
+                        "No se pueden asignar productos a una categoría con subcategorías. Elige una categoría hoja.",
+                    )
                 if newcat.is_default:
-                    raise ConflictError("CATEGORY_IS_DEFAULT", "La categoría 'Sin clasificar' es temporal. Asigna el producto a una subcategoría definitiva.")
+                    raise ConflictError(
+                        "CATEGORY_IS_DEFAULT",
+                        "La categoría 'Sin clasificar' es temporal. Asigna el producto a una subcategoría definitiva.",
+                    )
                 p.category_id = category_id
 
         p.status = status
@@ -384,6 +424,7 @@ class ProductService:
     async def list_pending_recategorization(self) -> list[Product]:
         """Active products sitting in a 'Sin clasificar' default category."""
         from app.models.category import Category
+
         result = await self.db.execute(
             select(Product)
             .join(Category, Category.id == Product.category_id)
@@ -396,7 +437,9 @@ class ProductService:
         )
         return list(result.scalars().all())
 
-    async def recategorize(self, assignments, actor_id: int, actor_name: str, request=None) -> int:
+    async def recategorize(
+        self, assignments, actor_id: int, actor_name: str, request=None
+    ) -> int:
         """Bulk-reassign products out of default buckets into final leaf
         categories, then drop emptied default buckets."""
         affected_defaults: set[int] = set()
@@ -404,14 +447,25 @@ class ProductService:
         for a in assignments:
             p = await self.repo.get_by_id(a.product_id)
             if not p:
-                raise NotFoundError("PRODUCT_NOT_FOUND", f"El producto {a.product_id} no existe.")
+                raise NotFoundError(
+                    "PRODUCT_NOT_FOUND", f"El producto {a.product_id} no existe."
+                )
             cat = await self.cat_repo.get_by_id(a.category_id)
             if not cat or not cat.is_active:
-                raise NotFoundError("CATEGORY_NOT_FOUND", "La categoría seleccionada no existe o está inactiva.")
+                raise NotFoundError(
+                    "CATEGORY_NOT_FOUND",
+                    "La categoría seleccionada no existe o está inactiva.",
+                )
             if await self.cat_repo.has_active_children(a.category_id):
-                raise ConflictError("CATEGORY_NOT_LEAF", "No se pueden asignar productos a una categoría con subcategorías. Elige una categoría hoja.")
+                raise ConflictError(
+                    "CATEGORY_NOT_LEAF",
+                    "No se pueden asignar productos a una categoría con subcategorías. Elige una categoría hoja.",
+                )
             if cat.is_default:
-                raise ConflictError("CATEGORY_IS_DEFAULT", "La categoría 'Sin clasificar' es temporal. Asigna el producto a una subcategoría definitiva.")
+                raise ConflictError(
+                    "CATEGORY_IS_DEFAULT",
+                    "La categoría 'Sin clasificar' es temporal. Asigna el producto a una subcategoría definitiva.",
+                )
             old = p.category_id
             if old == a.category_id:
                 continue
@@ -419,10 +473,15 @@ class ProductService:
             affected_defaults.add(old)
             count += 1
             await self.audit.log(
-                AuditAction.UPDATE, user_id=actor_id, username=actor_name,
-                entity_type="product", entity_id=p.id,
-                previous={"category_id": old}, new={"category_id": a.category_id},
-                description="Recategorize product", request=request,
+                AuditAction.UPDATE,
+                user_id=actor_id,
+                username=actor_name,
+                entity_type="product",
+                entity_id=p.id,
+                previous={"category_id": old},
+                new={"category_id": a.category_id},
+                description="Recategorize product",
+                request=request,
             )
 
         cat_svc = CategoryService(self.db)
