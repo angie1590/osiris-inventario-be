@@ -43,7 +43,7 @@ class AuthCodeRequest(BaseModel):
 
 
 class ApproveRequest(BaseModel):
-    authorization_code: str = Field(..., min_length=4, max_length=4)
+    authorization_code: str = Field(..., min_length=8, max_length=8)
 
 
 class VoidRequest(BaseModel):

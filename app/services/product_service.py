@@ -2,6 +2,7 @@ import secrets
 from decimal import Decimal
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +37,61 @@ class ProductService:
     @staticmethod
     def _auto_isbn() -> str:
         return f"AUTO-{secrets.token_hex(8)}"
+
+    @staticmethod
+    def _is_allowed_photo_content_type(content_type: str | None) -> bool:
+        if not content_type:
+            return False
+        normalized = content_type.split(";", 1)[0].strip().lower()
+        return normalized in {
+            "image/png",
+            "image/jpeg",
+            "image/jpg",
+            "image/heic",
+            "image/heif",
+        }
+
+    async def _validate_photo_url(self, photo: str | None) -> None:
+        if not photo or not photo.startswith(("http://", "https://")):
+            return
+
+        async with httpx.AsyncClient(follow_redirects=True, timeout=5.0) as client:
+            responses: list[httpx.Response] = []
+
+            try:
+                responses.append(await client.head(photo))
+            except httpx.HTTPError:
+                pass
+
+            needs_get = (
+                not responses
+                or responses[-1].status_code >= 400
+                or not self._is_allowed_photo_content_type(responses[-1].headers.get("content-type"))
+            )
+
+            if needs_get:
+                try:
+                    responses.append(await client.get(photo, headers={"Range": "bytes=0-0"}))
+                except httpx.HTTPError:
+                    # Some CDNs block bots/range requests; keep validation best-
+                    # effort and rely on schema/url-format checks.
+                    return
+
+        if not responses or all(r.status_code >= 400 for r in responses):
+            # Best-effort validation: if remote host is unreachable/forbidden,
+            # don't block saving and let the URL be stored.
+            return
+
+        if not any(
+            self._is_allowed_photo_content_type(r.headers.get("content-type"))
+            for r in responses
+            if r.status_code < 400
+        ):
+            raise ValidationAppError(
+                "INVALID_PHOTO_URL",
+                "La URL debe corresponder a una imagen PNG, JPG, JPEG o HEIC.",
+                field_errors={"photo": "La URL debe corresponder a una imagen PNG, JPG, JPEG o HEIC."},
+            )
 
     async def _validate_custom_attributes(
         self, category_id: int, custom_attributes: dict[str, Any] | None
@@ -110,6 +166,7 @@ class ProductService:
         isbn: str | None,
         name: str,
         description: str | None,
+        photo: str | None,
         category_id: int,
         stock_minimo: Decimal,
         pvp: Decimal,
@@ -135,6 +192,7 @@ class ProductService:
             )
 
         _validate_stock_quantity(stock_minimo, stock_mode, "stock_minimo")
+        await self._validate_photo_url(photo)
         await self._validate_custom_attributes(category_id, custom_attributes)
 
         product = Product(
@@ -142,6 +200,7 @@ class ProductService:
             codigo_interno=(codigo_interno.strip() if codigo_interno and codigo_interno.strip() else None),
             name=name,
             description=description,
+            photo=photo,
             category_id=category_id,
             stock_minimo=stock_minimo,
             stock_actual=Decimal("0"),
@@ -181,6 +240,7 @@ class ProductService:
         isbn: str | None,
         name: str | None,
         description: str | None,
+        photo: str | None,
         stock_minimo: Decimal | None,
         pvp: Decimal | None,
         custom_attributes: dict | None,
@@ -192,6 +252,7 @@ class ProductService:
         category_provided: bool = False,
         codigo_interno: str | None = None,
         codigo_interno_provided: bool = False,
+        photo_provided: bool = False,
     ) -> Product:
         p = await self.repo.get_by_id(product_id)
         if not p:
@@ -218,6 +279,8 @@ class ProductService:
 
         if stock_minimo is not None:
             _validate_stock_quantity(stock_minimo, stock_mode, "stock_minimo")
+        if photo_provided:
+            await self._validate_photo_url(photo)
         if custom_attributes is not None:
             await self._validate_custom_attributes(target_category_id, custom_attributes)
 
@@ -227,6 +290,7 @@ class ProductService:
             "pvp": float(p.pvp),
             "stock_minimo": float(p.stock_minimo),
             "category_id": p.category_id,
+            "photo": p.photo,
         }
         if isbn is not None:
             p.isbn = isbn
@@ -236,6 +300,8 @@ class ProductService:
             p.name = name
         if description is not None:
             p.description = description
+        if photo_provided:
+            p.photo = photo
         p.category_id = target_category_id
         if stock_minimo is not None:
             p.stock_minimo = stock_minimo

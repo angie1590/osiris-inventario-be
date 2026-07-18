@@ -3,7 +3,7 @@ from decimal import Decimal
 import secrets
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -27,6 +27,7 @@ class Product(Base):
     # is used is controlled by the 'internal_code_enabled' system param.
     codigo_interno: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    photo: Mapped[str | None] = mapped_column(Text, nullable=True)
     category_id: Mapped[int] = mapped_column(
         ForeignKey("categories.id", ondelete="RESTRICT"), nullable=False, index=True
     )

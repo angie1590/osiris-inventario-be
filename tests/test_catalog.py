@@ -1,6 +1,6 @@
 """Tests: categories and products catalog (task 13.4)"""
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 
 
 @pytest.mark.asyncio
@@ -147,6 +147,139 @@ async def test_create_product_with_required_attribute(client: AsyncClient, admin
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_product_with_photo_url(client: AsyncClient, admin_token: str, operator_token: str):
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def head(self, url):
+            return Response(200, headers={"content-type": "image/png"})
+
+        async def get(self, url, headers=None):
+            return Response(200, headers={"content-type": "image/png"})
+
+    import app.services.product_service as product_service_module
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(product_service_module.httpx, "AsyncClient", FakeAsyncClient)
+    cat = await client.post("/api/v1/categories", json={"name": "Photo Cat"}, headers={"Authorization": f"Bearer {admin_token}"})
+    cat_id = cat.json()["id"]
+
+    resp = await client.post(
+        "/api/v1/products",
+        json={
+            "name": "Photo Product",
+            "category_id": cat_id,
+            "pvp": "5.00",
+            "photo": "https://example.com/notebook.psd?fmt=png-alpha&wid=3350&hei=2357",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["photo"] == "https://example.com/notebook.psd?fmt=png-alpha&wid=3350&hei=2357"
+    monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_reject_product_with_invalid_photo_url(client: AsyncClient, admin_token: str, operator_token: str):
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def head(self, url):
+            return Response(200, headers={"content-type": "text/html"})
+
+        async def get(self, url, headers=None):
+            return Response(200, headers={"content-type": "text/html"})
+
+    import app.services.product_service as product_service_module
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(product_service_module.httpx, "AsyncClient", FakeAsyncClient)
+    cat = await client.post("/api/v1/categories", json={"name": "Invalid Photo Cat"}, headers={"Authorization": f"Bearer {admin_token}"})
+    cat_id = cat.json()["id"]
+
+    resp = await client.post(
+        "/api/v1/products",
+        json={
+            "name": "Invalid Photo Product",
+            "category_id": cat_id,
+            "pvp": "5.00",
+            "photo": "https://example.com/photo.jpg",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["errors"]["photo"] == "La URL debe corresponder a una imagen PNG, JPG, JPEG o HEIC."
+    monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_update_product_photo_url(client: AsyncClient, admin_token: str, operator_token: str):
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def head(self, url):
+            return Response(200, headers={"content-type": "image/jpeg"})
+
+        async def get(self, url, headers=None):
+            return Response(200, headers={"content-type": "image/jpeg"})
+
+    import app.services.product_service as product_service_module
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(product_service_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    cat = await client.post(
+        "/api/v1/categories",
+        json={"name": "Photo Update Cat"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    cat_id = cat.json()["id"]
+
+    created = await client.post(
+        "/api/v1/products",
+        json={"name": "Photo Update Product", "category_id": cat_id, "pvp": "5.00"},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert created.status_code == 201, created.text
+    product_id = created.json()["id"]
+
+    new_photo = "https://images.example.com/item?id=10"
+    updated = await client.patch(
+        f"/api/v1/products/{product_id}",
+        json={"photo": new_photo},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["photo"] == new_photo
+
+    fetched = await client.get(
+        f"/api/v1/products/{product_id}",
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["photo"] == new_photo
+    monkeypatch.undo()
 
 
 @pytest.mark.asyncio

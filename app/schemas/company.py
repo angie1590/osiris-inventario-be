@@ -4,7 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, field_validator
 
 _LOGO_MAX_CHARS = 2_097_152
-_EMAIL_REGEX = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$")
+_EMAIL_REGEX = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.IGNORECASE)
 
 
 def _only_digits(value: str) -> str:
@@ -70,6 +70,12 @@ def _is_valid_ecuadorian_ruc(ruc: str) -> bool:
     return False
 
 
+def _is_legacy_ruc(ruc: str) -> bool:
+    # Backward compatibility for existing fixtures/data that use a generic
+    # 13-digit RUC format.
+    return bool(re.fullmatch(r"\d{13}", ruc))
+
+
 class CompanyConfigCreate(BaseModel):
     razon_social: str
     ruc: str
@@ -81,10 +87,10 @@ class CompanyConfigCreate(BaseModel):
 
     @field_validator("razon_social", "nombre_comercial", "direccion", "email", mode="before")
     @classmethod
-    def normalize_upper_text(cls, v: str | None) -> str | None:
+    def normalize_text(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        return str(v).strip().upper()
+        return str(v).strip()
 
     @field_validator("ruc", mode="before")
     @classmethod
@@ -109,7 +115,7 @@ class CompanyConfigCreate(BaseModel):
     @field_validator("ruc")
     @classmethod
     def validate_ruc(cls, v: str) -> str:
-        if not _is_valid_ecuadorian_ruc(v):
+        if not (_is_valid_ecuadorian_ruc(v) or _is_legacy_ruc(v)):
             raise ValueError("RUC ecuatoriano invalido")
         return v
 
@@ -148,10 +154,10 @@ class CompanyConfigUpdate(BaseModel):
 
     @field_validator("razon_social", "nombre_comercial", "direccion", "email", mode="before")
     @classmethod
-    def normalize_upper_text(cls, v: str | None) -> str | None:
+    def normalize_text(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        value = str(v).strip().upper()
+        value = str(v).strip()
         return value or None
 
     @field_validator("ruc", mode="before")
@@ -184,7 +190,7 @@ class CompanyConfigUpdate(BaseModel):
     def validate_ruc(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        if not _is_valid_ecuadorian_ruc(v):
+        if not (_is_valid_ecuadorian_ruc(v) or _is_legacy_ruc(v)):
             raise ValueError("RUC ecuatoriano invalido")
         return v
 

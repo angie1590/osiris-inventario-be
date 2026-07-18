@@ -30,6 +30,7 @@ def _to_response(p) -> dict:
                 "codigo_interno",
                 "name",
                 "description",
+                "photo",
                 "category_id",
                 "stock_minimo",
                 "stock_actual",
@@ -86,6 +87,7 @@ async def create_product(
         body.isbn,
         body.name,
         body.description,
+        body.photo,
         body.category_id,
         body.stock_minimo,
         body.pvp,
@@ -146,6 +148,7 @@ async def update_product(
         body.isbn,
         body.name,
         body.description,
+        body.photo,
         body.stock_minimo,
         body.pvp,
         body.custom_attributes,
@@ -157,6 +160,7 @@ async def update_product(
         category_provided="category_id" in body.model_fields_set,
         codigo_interno=body.codigo_interno,
         codigo_interno_provided="codigo_interno" in body.model_fields_set,
+        photo_provided="photo" in body.model_fields_set,
     )
     return _to_response(p)
 

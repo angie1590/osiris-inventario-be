@@ -231,11 +231,11 @@ class AuthService:
                 "Only admin or supervisor users can configure an approval code",
             )
 
-        normalized = approval_code.strip()
-        if not re.fullmatch(r"\d{4}", normalized):
+        normalized = approval_code.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{8}", normalized):
             raise ValidationAppError(
                 "INVALID_APPROVAL_CODE_FORMAT",
-                "Approval code must be exactly 4 digits",
+                "Approval code must be exactly 8 alphanumeric characters",
             )
 
         user.approval_code_hash = hash_password(normalized)

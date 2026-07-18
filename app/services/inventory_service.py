@@ -401,8 +401,8 @@ class InventoryService:
                 "Approver does not have a configured approval code",
             )
 
-        normalized_code = raw_code.strip()
-        if not re.fullmatch(r"\d{4}", normalized_code):
+        normalized_code = raw_code.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{8}", normalized_code):
             raise ValidationAppError(
                 "APPROVAL_CODE_INVALID", "Approval code is invalid"
             )
@@ -507,8 +507,8 @@ class InventoryService:
         if not authorizer_pin or not authorizer_pin.strip():
             raise ValidationAppError("VOID_PIN_REQUIRED", "Se requiere el PIN de un supervisor o administrador")
 
-        pin = authorizer_pin.strip()
-        if not re.fullmatch(r"\d{4}", pin):
+        pin = authorizer_pin.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{8}", pin):
             raise ValidationAppError("VOID_PIN_INVALID", "PIN de autorización inválido")
 
         result = await self.db.execute(
