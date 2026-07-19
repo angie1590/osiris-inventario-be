@@ -362,14 +362,21 @@ class ProductService:
                 target_category_id, custom_attributes
             )
 
+        old_category = await self.cat_repo.get_by_id(old_category_id)
+        new_category = await self.cat_repo.get_by_id(target_category_id)
+
         previous = {
             "isbn": p.isbn,
+            "codigo_interno": p.codigo_interno,
             "name": p.name,
+            "description": p.description,
             "pvp": float(p.pvp),
             "stock_minimo": float(p.stock_minimo),
             "category_id": p.category_id,
+            "category_name": old_category.name if old_category else None,
             "photo": p.photo,
             "photos": p.photos,
+            "custom_attributes": p.custom_attributes,
         }
         if isbn is not None:
             p.isbn = isbn
@@ -406,7 +413,19 @@ class ProductService:
             entity_type="product",
             entity_id=p.id,
             previous=previous,
-            new={"isbn": p.isbn, "name": p.name, "pvp": float(p.pvp)},
+            new={
+                "isbn": p.isbn,
+                "codigo_interno": p.codigo_interno,
+                "name": p.name,
+                "description": p.description,
+                "pvp": float(p.pvp),
+                "stock_minimo": float(p.stock_minimo),
+                "category_id": p.category_id,
+                "category_name": new_category.name if new_category else None,
+                "photo": p.photo,
+                "photos": p.photos,
+                "custom_attributes": p.custom_attributes,
+            },
             request=request,
         )
         await self.db.commit()

@@ -1,5 +1,7 @@
 """Tests: categories and products catalog (task 13.4)"""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from httpx import AsyncClient, Response
 
@@ -369,6 +371,100 @@ async def test_update_product_photo_url(
     )
     assert fetched.status_code == 200, fetched.text
     assert fetched.json()["photo"] == new_photo
+    monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_update_product_photo_audit_includes_full_new_values(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def head(self, url):
+            return Response(200, headers={"content-type": "image/jpeg"})
+
+        async def get(self, url, headers=None):
+            return Response(200, headers={"content-type": "image/jpeg"})
+
+    import app.services.product_service as product_service_module
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(product_service_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    cat = await client.post(
+        "/api/v1/categories",
+        json={"name": "Photo Audit Cat"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    cat_id = cat.json()["id"]
+
+    created = await client.post(
+        "/api/v1/products",
+        json={
+            "name": "Photo Audit Product",
+            "category_id": cat_id,
+            "pvp": "18.00",
+            "stock_minimo": "10",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert created.status_code == 201, created.text
+    product = created.json()
+    product_id = product["id"]
+
+    new_photo = "https://images.example.com/audit-photo.jpg"
+    updated = await client.patch(
+        f"/api/v1/products/{product_id}",
+        json={"photo": new_photo},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert updated.status_code == 200, updated.text
+
+    now = datetime.now(timezone.utc)
+    logs_resp = await client.get(
+        "/api/v1/audit",
+        params={
+            "date_from": (now - timedelta(hours=1)).isoformat(),
+            "date_to": (now + timedelta(minutes=5)).isoformat(),
+            "action": "UPDATE",
+            "entity_type": "product",
+            "entity_id": str(product_id),
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert logs_resp.status_code == 200, logs_resp.text
+    logs = logs_resp.json()
+    assert len(logs) > 0
+    log = logs[0]
+
+    previous_values = log["previous_values"]
+    new_values = log["new_values"]
+    assert isinstance(previous_values, dict)
+    assert isinstance(new_values, dict)
+
+    assert "category_id" in previous_values
+    assert "category_name" in previous_values
+    assert "stock_minimo" in previous_values
+    assert "photo" in previous_values
+    assert "photos" in previous_values
+    assert "description" in previous_values
+
+    assert "category_id" in new_values
+    assert "category_name" in new_values
+    assert "stock_minimo" in new_values
+    assert "photo" in new_values
+    assert "photos" in new_values
+    assert "description" in new_values
+    assert new_values["photo"] == new_photo
+
     monkeypatch.undo()
 
 
