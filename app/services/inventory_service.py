@@ -15,6 +15,7 @@ from app.models.inventory import (
     AuthorizationCode,
     InventoryDocument,
     InventoryDocumentLine,
+    InventorySupplier,
 )
 from app.models.user import User
 from app.repositories.inventory_repository import InventoryRepository
@@ -115,6 +116,11 @@ class InventoryService:
 
     async def create_ingreso(
         self,
+        ingreso_type: str,
+        supplier_id: int | None,
+        purchase_document_type: str,
+        purchase_document_number: str | None,
+        purchase_document_date: datetime | None,
         reference: str | None,
         notes: str | None,
         lines_data: list,
@@ -130,6 +136,13 @@ class InventoryService:
         await self._validate_products_active(lines_data)
         await self._validate_quantity_mode(lines_data)
 
+        if ingreso_type == "purchase" and supplier_id:
+            supplier = await self.db.get(InventorySupplier, supplier_id)
+            if not supplier or not supplier.is_active:
+                raise ValidationAppError(
+                    "SUPPLIER_NOT_FOUND", f"Supplier {supplier_id} not found"
+                )
+
         year = datetime.now(timezone.utc).year
         number = await self.repo.generate_document_number(DocumentType.IN, year)
 
@@ -137,6 +150,11 @@ class InventoryService:
             number=number,
             doc_type=DocumentType.IN,
             status=DocumentStatus.approved,
+            ingreso_type=ingreso_type,
+            supplier_id=supplier_id,
+            purchase_document_type=purchase_document_type,
+            purchase_document_number=purchase_document_number,
+            purchase_document_date=purchase_document_date,
             reference=reference,
             notes=notes,
             created_by=actor_id,

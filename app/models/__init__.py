@@ -5,7 +5,14 @@ from app.models.catalog import Catalog, CatalogValue  # noqa: F401
 from app.models.attribute_remap import PendingAttributeRemap  # noqa: F401
 from app.models.product import Product  # noqa: F401
 from app.models.system_param import SystemParam  # noqa: F401
-from app.models.inventory import DocumentSequence, InventoryDocument, InventoryDocumentLine, AuthorizationCode  # noqa: F401
+from app.models.inventory import (  # noqa: F401
+	AuthorizationCode,
+	DocumentSequence,
+	InventoryDocument,
+	InventoryDocumentAttachment,
+	InventoryDocumentLine,
+	InventorySupplier,
+)
 from app.models.kardex import InventoryLot, KardexEntry  # noqa: F401
 from app.models.audit_log import AuditLog  # noqa: F401
 from app.models.company_config import CompanyConfig  # noqa: F401

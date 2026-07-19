@@ -10,10 +10,11 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_role
 from app.models.enums import UserRole
+from app.models.inventory import InventoryDocument
 from app.models.kardex import KardexEntry
 from app.models.system_param import SystemParam
 from app.models.user import User
-from app.schemas.kardex import KardexResponse
+from app.schemas.kardex import KardexEntryResponse, KardexResponse
 
 router = APIRouter()
 
@@ -85,6 +86,15 @@ async def get_kardex(
     result = await db.execute(q)
     entries = list(result.scalars().all())
 
+    doc_ids = {e.document_id for e in entries if e.document_id}
+    doc_numbers: dict[int, tuple[str, str]] = {}
+    if doc_ids:
+        docs_result = await db.execute(
+            select(InventoryDocument).where(InventoryDocument.id.in_(doc_ids))
+        )
+        for d in docs_result.scalars().all():
+            doc_numbers[d.id] = (d.number, d.doc_type.value)
+
     # Get opening balance (last entry before date_from)
     opening_qty = Decimal("0")
     opening_val = Decimal("0")
@@ -112,10 +122,31 @@ async def get_kardex(
     closing_val = entries[-1].balance_value if entries else opening_val
     weighted_avg = entries[-1].weighted_avg_cost if entries else opening_avg
 
+    entry_rows = [
+        KardexEntryResponse(
+            id=e.id,
+            product_id=e.product_id,
+            document_id=e.document_id,
+            entry_type=e.entry_type,
+            quantity_in=e.quantity_in,
+            cost_in=e.cost_in,
+            quantity_out=e.quantity_out,
+            cost_out=e.cost_out,
+            balance_quantity=e.balance_quantity,
+            balance_value=e.balance_value,
+            weighted_avg_cost=e.weighted_avg_cost,
+            lot_id=e.lot_id,
+            document_number=doc_numbers.get(e.document_id, (None, None))[0],
+            document_doc_type=doc_numbers.get(e.document_id, (None, None))[1],
+            created_at=e.created_at,
+        )
+        for e in entries
+    ]
+
     return KardexResponse(
         product_id=product_id,
         method=method,
-        entries=entries,
+        entries=entry_rows,
         opening_balance_quantity=opening_qty,
         opening_balance_value=opening_val,
         closing_balance_quantity=closing_qty,

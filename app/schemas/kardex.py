@@ -19,6 +19,8 @@ class KardexEntryResponse(BaseModel):
     balance_value: Decimal
     weighted_avg_cost: Decimal
     lot_id: int | None
+    document_number: str | None = None
+    document_doc_type: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

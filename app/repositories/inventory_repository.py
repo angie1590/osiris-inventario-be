@@ -70,6 +70,8 @@ class InventoryRepository:
             select(InventoryDocument)
             .where(InventoryDocument.id == document.id)
             .options(
+                selectinload(InventoryDocument.supplier),
+                selectinload(InventoryDocument.attachments),
                 selectinload(InventoryDocument.lines).selectinload(
                     InventoryDocumentLine.product
                 )
@@ -82,6 +84,8 @@ class InventoryRepository:
             select(InventoryDocument)
             .where(InventoryDocument.id == document_id)
             .options(
+                selectinload(InventoryDocument.supplier),
+                selectinload(InventoryDocument.attachments),
                 selectinload(InventoryDocument.lines).selectinload(
                     InventoryDocumentLine.product
                 )
@@ -94,6 +98,8 @@ class InventoryRepository:
             select(InventoryDocument)
             .where(InventoryDocument.number == number)
             .options(
+                selectinload(InventoryDocument.supplier),
+                selectinload(InventoryDocument.attachments),
                 selectinload(InventoryDocument.lines).selectinload(
                     InventoryDocumentLine.product
                 )
@@ -115,6 +121,8 @@ class InventoryRepository:
         q = (
             select(InventoryDocument)
             .options(
+                selectinload(InventoryDocument.supplier),
+                selectinload(InventoryDocument.attachments),
                 selectinload(InventoryDocument.lines).selectinload(
                     InventoryDocumentLine.product
                 )

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     # Inventory
     KARDEX_METHOD: Literal["PEPS", "WEIGHTED_AVERAGE"] = "PEPS"
+    DOCUMENT_UPLOAD_DIR: str = "storage/inventory_documents"
 
     # CORS
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
