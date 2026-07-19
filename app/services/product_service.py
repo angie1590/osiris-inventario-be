@@ -99,6 +99,49 @@ class ProductService:
                 },
             )
 
+    @staticmethod
+    def _normalize_gallery(
+        photo: str | None,
+        photos: list[dict[str, Any]] | None,
+    ) -> tuple[str | None, list[dict[str, Any]] | None]:
+        if photos is not None:
+            if len(photos) == 0:
+                return None, []
+            normalized = [
+                {"url": str(item.get("url", "")).strip(), "is_cover": bool(item.get("is_cover", False))}
+                for item in photos
+                if str(item.get("url", "")).strip()
+            ]
+            if len(normalized) == 0:
+                return None, []
+
+            cover_idx = next((idx for idx, item in enumerate(normalized) if item["is_cover"]), None)
+            if cover_idx is None:
+                normalized[0]["is_cover"] = True
+                cover_idx = 0
+
+            for idx, item in enumerate(normalized):
+                item["is_cover"] = idx == cover_idx
+
+            return normalized[cover_idx]["url"], normalized
+
+        text = photo.strip() if photo else None
+        if text:
+            return text, [{"url": text, "is_cover": True}]
+        return None, None
+
+    async def _validate_gallery_urls(
+        self,
+        photo: str | None,
+        photos: list[dict[str, Any]] | None,
+    ) -> tuple[str | None, list[dict[str, Any]] | None]:
+        cover, normalized = self._normalize_gallery(photo, photos)
+        if normalized is None:
+            return cover, None
+        for item in normalized:
+            await self._validate_photo_url(item["url"])
+        return cover, normalized
+
     async def _validate_custom_attributes(
         self, category_id: int, custom_attributes: dict[str, Any] | None
     ) -> None:
@@ -181,6 +224,7 @@ class ProductService:
         name: str,
         description: str | None,
         photo: str | None,
+        photos: list[dict[str, Any]] | None,
         category_id: int,
         stock_minimo: Decimal,
         pvp: Decimal,
@@ -206,7 +250,7 @@ class ProductService:
             )
 
         _validate_stock_quantity(stock_minimo, stock_mode, "stock_minimo")
-        await self._validate_photo_url(photo)
+        photo_cover, normalized_photos = await self._validate_gallery_urls(photo, photos)
         await self._validate_custom_attributes(category_id, custom_attributes)
 
         product = Product(
@@ -218,7 +262,8 @@ class ProductService:
             ),
             name=name,
             description=description,
-            photo=photo,
+            photo=photo_cover,
+            photos=normalized_photos,
             category_id=category_id,
             stock_minimo=stock_minimo,
             stock_actual=Decimal("0"),
@@ -259,6 +304,7 @@ class ProductService:
         name: str | None,
         description: str | None,
         photo: str | None,
+        photos: list[dict[str, Any]] | None,
         stock_minimo: Decimal | None,
         pvp: Decimal | None,
         custom_attributes: dict | None,
@@ -271,6 +317,7 @@ class ProductService:
         codigo_interno: str | None = None,
         codigo_interno_provided: bool = False,
         photo_provided: bool = False,
+        photos_provided: bool = False,
     ) -> Product:
         p = await self.repo.get_by_id(product_id)
         if not p:
@@ -304,8 +351,12 @@ class ProductService:
 
         if stock_minimo is not None:
             _validate_stock_quantity(stock_minimo, stock_mode, "stock_minimo")
-        if photo_provided:
-            await self._validate_photo_url(photo)
+        photo_cover: str | None = None
+        normalized_photos: list[dict[str, Any]] | None = None
+        if photos_provided:
+            photo_cover, normalized_photos = await self._validate_gallery_urls(photo, photos)
+        elif photo_provided:
+            photo_cover, normalized_photos = await self._validate_gallery_urls(photo, None)
         if custom_attributes is not None:
             await self._validate_custom_attributes(
                 target_category_id, custom_attributes
@@ -318,6 +369,7 @@ class ProductService:
             "stock_minimo": float(p.stock_minimo),
             "category_id": p.category_id,
             "photo": p.photo,
+            "photos": p.photos,
         }
         if isbn is not None:
             p.isbn = isbn
@@ -331,8 +383,9 @@ class ProductService:
             p.name = name
         if description is not None:
             p.description = description
-        if photo_provided:
-            p.photo = photo
+        if photos_provided or photo_provided:
+            p.photo = photo_cover
+            p.photos = normalized_photos
         p.category_id = target_category_id
         if stock_minimo is not None:
             p.stock_minimo = stock_minimo

@@ -43,6 +43,7 @@ class ProductBase(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     description: str | None = Field(None, max_length=1000)
     photo: str | None = None
+    photos: list[dict[str, Any]] | None = None
 
     @field_validator("photo", mode="before")
     @classmethod
@@ -59,6 +60,41 @@ class ProductBase(BaseModel):
         raise ValueError(
             "La foto debe ser PNG, JPG, JPEG o HEIC, o una URL directa a una imagen válida"
         )
+
+    @field_validator("photos", mode="before")
+    @classmethod
+    def normalize_photos(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("El formato de fotos es inválido")
+        normalized: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise ValueError("El formato de fotos es inválido")
+            url = _normalize_photo(item.get("url"))
+            if not url:
+                raise ValueError("Cada foto debe incluir una URL o data URL válida")
+            normalized.append({"url": url, "is_cover": bool(item.get("is_cover", False))})
+        return normalized
+
+    @field_validator("photos")
+    @classmethod
+    def validate_photos(cls, value: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+        if value is None:
+            return None
+        if len(value) == 0:
+            return []
+        covers = 0
+        for item in value:
+            url = str(item.get("url", "")).strip()
+            if not (_is_valid_image_data_url(url) or _is_valid_image_url(url)):
+                raise ValueError("La foto debe ser PNG, JPG, JPEG o HEIC, o una URL directa a una imagen válida")
+            if bool(item.get("is_cover", False)):
+                covers += 1
+        if covers != 1:
+            raise ValueError("Debe existir una sola imagen de portada")
+        return value
 
 
 class ProductCreate(ProductBase):
@@ -99,6 +135,7 @@ class ProductResponse(BaseModel):
     name: str
     description: str | None
     photo: str | None = None
+    photos: list[dict[str, Any]] | None = None
     category_id: int
     stock_minimo: Decimal
     stock_actual: Decimal

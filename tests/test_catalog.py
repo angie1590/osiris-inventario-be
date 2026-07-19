@@ -373,6 +373,89 @@ async def test_update_product_photo_url(
 
 
 @pytest.mark.asyncio
+async def test_create_product_with_multiple_photos_and_cover(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def head(self, url):
+            return Response(200, headers={"content-type": "image/jpeg"})
+
+        async def get(self, url, headers=None):
+            return Response(200, headers={"content-type": "image/jpeg"})
+
+    import app.services.product_service as product_service_module
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(product_service_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    cat = await client.post(
+        "/api/v1/categories",
+        json={"name": "Gallery Cat"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    cat_id = cat.json()["id"]
+
+    photos = [
+        {"url": "https://example.com/p1.jpg", "is_cover": False},
+        {"url": "https://example.com/p2.jpg", "is_cover": True},
+        {"url": "https://example.com/p3.jpg", "is_cover": False},
+    ]
+    created = await client.post(
+        "/api/v1/products",
+        json={
+            "name": "Gallery Product",
+            "category_id": cat_id,
+            "pvp": "5.00",
+            "photos": photos,
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert created.status_code == 201, created.text
+    data = created.json()
+    assert data["photo"] == "https://example.com/p2.jpg"
+    assert len(data["photos"]) == 3
+    assert sum(1 for item in data["photos"] if item["is_cover"]) == 1
+    monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_reject_product_photos_with_multiple_covers(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    cat = await client.post(
+        "/api/v1/categories",
+        json={"name": "Gallery Invalid Cat"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    cat_id = cat.json()["id"]
+
+    resp = await client.post(
+        "/api/v1/products",
+        json={
+            "name": "Invalid Gallery Product",
+            "category_id": cat_id,
+            "pvp": "5.00",
+            "photos": [
+                {"url": "https://example.com/a.jpg", "is_cover": True},
+                {"url": "https://example.com/b.jpg", "is_cover": True},
+            ],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 422
+    assert "Debe existir una sola imagen de portada" in resp.text
+
+
+@pytest.mark.asyncio
 async def test_attribute_type_change_migrates_values(
     client: AsyncClient, admin_token: str, operator_token: str
 ):

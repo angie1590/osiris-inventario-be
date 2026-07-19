@@ -21,6 +21,8 @@ _read_roles = require_role(UserRole.admin, UserRole.operator, UserRole.superviso
 
 
 def _to_response(p) -> dict:
+    photos = p.photos if p.photos is not None else ([{"url": p.photo, "is_cover": True}] if p.photo else [])
+    cover = next((item["url"] for item in photos if item.get("is_cover")), None) or (photos[0]["url"] if photos else None)
     return {
         **{
             c: getattr(p, c)
@@ -30,7 +32,7 @@ def _to_response(p) -> dict:
                 "codigo_interno",
                 "name",
                 "description",
-                "photo",
+                "photos",
                 "category_id",
                 "stock_minimo",
                 "stock_actual",
@@ -41,6 +43,8 @@ def _to_response(p) -> dict:
                 "updated_at",
             ]
         },
+        "photo": cover,
+        "photos": photos,
         "bajo_stock": p.stock_minimo > 0 and p.stock_actual <= p.stock_minimo,
     }
 
@@ -89,6 +93,7 @@ async def create_product(
         body.name,
         body.description,
         body.photo,
+        body.photos,
         body.category_id,
         body.stock_minimo,
         body.pvp,
@@ -152,6 +157,7 @@ async def update_product(
         body.name,
         body.description,
         body.photo,
+        body.photos,
         body.stock_minimo,
         body.pvp,
         body.custom_attributes,
@@ -164,6 +170,7 @@ async def update_product(
         codigo_interno=body.codigo_interno,
         codigo_interno_provided="codigo_interno" in body.model_fields_set,
         photo_provided="photo" in body.model_fields_set,
+        photos_provided="photos" in body.model_fields_set,
     )
     return _to_response(p)
 

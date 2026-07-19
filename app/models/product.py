@@ -30,6 +30,7 @@ class Product(Base):
     )
     description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     photo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photos: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     category_id: Mapped[int] = mapped_column(
         ForeignKey("categories.id", ondelete="RESTRICT"), nullable=False, index=True
     )
