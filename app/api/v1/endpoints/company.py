@@ -6,13 +6,38 @@ from app.core.deps import require_admin, require_any_role
 from app.core.exceptions import NotFoundError
 from app.models.company_config import CompanyConfig
 from app.models.user import User
-from app.schemas.company import CompanyConfigCreate, CompanyConfigResponse, CompanyConfigUpdate
+from app.schemas.company import (
+    CompanyConfigCreate,
+    CompanyConfigResponse,
+    CompanyConfigUpdate,
+    DEFAULT_EGRESO_TYPES,
+    DEFAULT_BAJA_REASONS,
+    DEFAULT_INGRESO_TYPES,
+)
 from app.services.company_service import CompanyService, _is_complete
 
 router = APIRouter()
 
 
+def _normalize_egreso_types(types: list[str] | None) -> list[str]:
+    legacy_baja_types = {
+        "damage_disposal",
+        "expiration_disposal",
+        "loss_theft_disposal",
+        "donation",
+    }
+    values: list[str] = []
+    for item in types or []:
+        normalized = "baja" if item in legacy_baja_types else item
+        if normalized not in values:
+            values.append(normalized)
+    return values or DEFAULT_EGRESO_TYPES
+
+
 def _to_response(company: CompanyConfig) -> CompanyConfigResponse:
+    enabled_ingreso_types = company.enabled_ingreso_types or DEFAULT_INGRESO_TYPES
+    enabled_egreso_types = _normalize_egreso_types(company.enabled_egreso_types)
+    enabled_baja_reasons = company.enabled_baja_reasons or DEFAULT_BAJA_REASONS
     return CompanyConfigResponse(
         id=company.id,
         razon_social=company.razon_social,
@@ -22,6 +47,9 @@ def _to_response(company: CompanyConfig) -> CompanyConfigResponse:
         telefono=company.telefono,
         email=company.email,
         logo=company.logo,
+        enabled_ingreso_types=enabled_ingreso_types,
+        enabled_egreso_types=enabled_egreso_types,
+        enabled_baja_reasons=enabled_baja_reasons,
         is_complete=_is_complete(company),
         created_at=company.created_at,
         updated_at=company.updated_at,

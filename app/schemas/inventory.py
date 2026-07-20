@@ -1,10 +1,55 @@
 from datetime import datetime
 from decimal import Decimal
+import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.enums import AdjustType, DocumentStatus, DocumentType
+
+PurchaseDocumentType = Literal[
+    "invoice",
+    "sales_note",
+    "liquidation_purchase",
+    "receipt",
+    "other",
+    "inventory_act",
+    "adjustment_act",
+    "credit_note",
+    "production_act",
+    "transfer_note",
+    "delivery_note",
+    "disposal_act",
+    "donation_act",
+    "internal_consumption_act",
+    "supplier_return",
+    "transfer_act",
+    "none",
+]
+
+EgresoType = Literal[
+    "sale",
+    "baja",
+    "adjustment_negative",
+    "supplier_return",
+    "internal_consumption",
+    "transfer_sent",
+    "other",
+]
+
+BajaReason = Literal[
+    "damage",
+    "expiration",
+    "loss",
+    "theft",
+    "donation",
+    "gift",
+    "destruction",
+    "sample",
+    "other",
+]
+
+DiscountType = Literal["percent", "fixed"]
 
 
 def _is_valid_ecuador_ruc(value: str) -> bool:
@@ -82,25 +127,112 @@ class DocumentLineCreate(BaseModel):
     quantity: Decimal = Field(..., gt=0)
     unit_cost: Decimal = Field(default=Decimal("0"), ge=0)
     unit_price: Decimal = Field(default=Decimal("0"), ge=0)
+    unit_price_base: Decimal | None = Field(default=None, ge=0)
+    discount_type: DiscountType | None = None
+    discount_value: Decimal | None = Field(default=None, ge=0)
 
 
 class IngresoCreate(BaseModel):
-    ingreso_type: Literal["purchase", "initial_inventory"] = "purchase"
+    ingreso_type: Literal[
+        "purchase",
+        "initial_inventory",
+        "adjustment_positive",
+        "customer_return",
+        "production",
+        "transfer_received",
+        "other",
+    ] = "purchase"
     supplier_id: int | None = None
-    purchase_document_type: Literal[
-        "invoice", "sales_note", "receipt", "none"
-    ] = "invoice"
+    purchase_document_type: PurchaseDocumentType = "invoice"
     purchase_document_number: str | None = Field(None, max_length=100)
     purchase_document_date: datetime | None = None
     reference: str | None = Field(None, max_length=200)
     notes: str | None = Field(None, max_length=2000)
     lines: list[DocumentLineCreate] = Field(..., min_length=1)
 
+    @field_validator("purchase_document_date", mode="before")
+    @classmethod
+    def _normalize_purchase_document_date(cls, value):
+        if value is None or isinstance(value, datetime):
+            return value
+
+        raw = str(value).strip()
+        if not raw:
+            return None
+
+        # Accept browser-localized values such as: "19/07/2026, 10:46 a.m."
+        m = re.match(
+            r"^(\d{2})/(\d{2})/(\d{4}),?\s+(\d{1,2}):(\d{2})\s*([ap])\.?\s*m\.?$",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if not m:
+            return value
+
+        day = int(m.group(1))
+        month = int(m.group(2))
+        year = int(m.group(3))
+        hour = int(m.group(4))
+        minute = int(m.group(5))
+        ampm = m.group(6).lower()
+
+        if ampm == "p" and hour < 12:
+            hour += 12
+        if ampm == "a" and hour == 12:
+            hour = 0
+
+        return f"{year:04d}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}:00"
+
 
 class EgresoCreate(BaseModel):
+    egreso_type: EgresoType = "sale"
+    purchase_document_type: PurchaseDocumentType = "sales_note"
+    purchase_document_number: str | None = Field(None, max_length=100)
+    purchase_document_date: datetime | None = None
+    baja_reason: BajaReason | None = None
     reference: str | None = Field(None, max_length=200)
     notes: str | None = Field(None, max_length=2000)
     lines: list[DocumentLineCreate] = Field(..., min_length=1)
+
+    @field_validator("purchase_document_date", mode="before")
+    @classmethod
+    def _normalize_purchase_document_date(cls, value):
+        if value is None or isinstance(value, datetime):
+            return value
+
+        raw = str(value).strip()
+        if not raw:
+            return None
+
+        m = re.match(
+            r"^(\d{2})/(\d{2})/(\d{4}),?\s+(\d{1,2}):(\d{2})\s*([ap])\.?\s*m\.?$",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if not m:
+            return value
+
+        day = int(m.group(1))
+        month = int(m.group(2))
+        year = int(m.group(3))
+        hour = int(m.group(4))
+        minute = int(m.group(5))
+        ampm = m.group(6).lower()
+
+        if ampm == "p" and hour < 12:
+            hour += 12
+        if ampm == "a" and hour == 12:
+            hour = 0
+
+        return f"{year:04d}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}:00"
+
+    @model_validator(mode="after")
+    def _validate_baja_reason(self):
+        if self.egreso_type == "baja" and not self.baja_reason:
+            raise ValueError("Motivo de la baja es obligatorio")
+        if self.egreso_type != "baja":
+            self.baja_reason = None
+        return self
 
 
 class BajaCreate(BaseModel):
@@ -137,6 +269,9 @@ class DocumentLineResponse(BaseModel):
     quantity: Decimal
     unit_cost: Decimal
     unit_price: Decimal
+    unit_price_base: Decimal | None = None
+    discount_type: DiscountType | None = None
+    discount_value: Decimal | None = None
     lot_id: int | None
 
     model_config = ConfigDict(from_attributes=True)
@@ -272,8 +407,10 @@ class DocumentResponse(BaseModel):
     doc_type: DocumentType
     status: DocumentStatus
     ingreso_type: str | None
+    egreso_type: str | None = None
+    baja_reason: str | None = None
     supplier_id: int | None
-    purchase_document_type: str | None
+    purchase_document_type: PurchaseDocumentType | None
     purchase_document_number: str | None
     purchase_document_date: datetime | None
     reference: str | None

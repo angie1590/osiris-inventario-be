@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import ConflictError, NotFoundError, ValidationAppError
+from app.models.company_config import CompanyConfig
 from app.models.enums import AdjustType, AuditAction, DocumentStatus, DocumentType
 from app.models.enums import UserRole
 from app.models.inventory import (
@@ -27,6 +28,60 @@ from app.services.kardex_service import KardexService
 
 def _hash_code(code: str) -> str:
     return hashlib.sha256(code.encode()).hexdigest()
+
+
+INGRESO_DOCUMENT_TYPES: dict[str, set[str]] = {
+    "purchase": {
+        "invoice",
+        "sales_note",
+        "liquidation_purchase",
+        "receipt",
+        "other",
+    },
+    "initial_inventory": {"inventory_act", "none"},
+    "adjustment_positive": {"adjustment_act", "none"},
+    "customer_return": {"invoice", "credit_note", "other"},
+    "production": {"production_act", "none"},
+    "transfer_received": {"transfer_note", "none"},
+    "other": {"other", "none"},
+}
+
+EGRESO_DOCUMENT_TYPES: dict[str, set[str]] = {
+    "sale": {"invoice", "sales_note"},
+    "baja": {"disposal_act", "none"},
+    "adjustment_negative": {"adjustment_act", "none"},
+    "supplier_return": {"supplier_return", "invoice", "transfer_note"},
+    "internal_consumption": {"internal_consumption_act", "none"},
+    "transfer_sent": {"transfer_note", "transfer_act"},
+    "other": {"other", "none"},
+}
+
+DEFAULT_BAJA_REASONS = {
+    "damage",
+    "expiration",
+    "loss",
+    "theft",
+    "donation",
+    "gift",
+    "destruction",
+    "sample",
+    "other",
+}
+
+
+def _normalize_egreso_types(types: list[str] | None) -> list[str]:
+    legacy_baja_types = {
+        "damage_disposal",
+        "expiration_disposal",
+        "loss_theft_disposal",
+        "donation",
+    }
+    values: list[str] = []
+    for item in types or []:
+        normalized = "baja" if item in legacy_baja_types else item
+        if normalized not in values:
+            values.append(normalized)
+    return values
 
 
 class InventoryService:
@@ -108,6 +163,72 @@ class InventoryService:
                     f"Product {p.name}: available {p.stock_actual}, requested {line.quantity}",
                 )
 
+    async def _validate_enabled_ingreso_type(self, ingreso_type: str) -> None:
+        result = await self.db.execute(select(CompanyConfig).limit(1))
+        company = result.scalar_one_or_none()
+        enabled = company.enabled_ingreso_types if company else [
+            "purchase",
+            "initial_inventory",
+            "adjustment_positive",
+            "customer_return",
+            "production",
+            "transfer_received",
+            "other",
+        ]
+        if ingreso_type not in enabled:
+            raise ValidationAppError(
+                "INGRESO_TYPE_DISABLED",
+                "El tipo de ingreso no está habilitado para la empresa",
+            )
+
+    async def _validate_enabled_egreso_type(self, egreso_type: str) -> None:
+        result = await self.db.execute(select(CompanyConfig).limit(1))
+        company = result.scalar_one_or_none()
+        enabled = _normalize_egreso_types(company.enabled_egreso_types if company else [
+            "sale",
+            "baja",
+            "adjustment_negative",
+            "supplier_return",
+            "internal_consumption",
+            "transfer_sent",
+            "other",
+        ])
+        if egreso_type not in enabled:
+            raise ValidationAppError(
+                "EGRESO_TYPE_DISABLED",
+                "El tipo de egreso no está habilitado para la empresa",
+            )
+
+    async def _validate_enabled_baja_reason(self, baja_reason: str) -> None:
+        result = await self.db.execute(select(CompanyConfig).limit(1))
+        company = result.scalar_one_or_none()
+        enabled = company.enabled_baja_reasons if company else sorted(DEFAULT_BAJA_REASONS)
+        if baja_reason not in enabled:
+            raise ValidationAppError(
+                "BAJA_REASON_DISABLED",
+                "El motivo de la baja no está habilitado para la empresa",
+            )
+
+    def _validate_document_type_for_ingreso(
+        self, ingreso_type: str, document_type: str
+    ) -> None:
+        allowed = INGRESO_DOCUMENT_TYPES.get(ingreso_type)
+        if allowed and document_type not in allowed:
+            raise ValidationAppError(
+                "INVALID_PURCHASE_DOCUMENT_TYPE",
+                "El tipo de documento no está permitido para este tipo de ingreso",
+            )
+
+    def _validate_document_type_for_egreso(
+        self, egreso_type: str, document_type: str
+    ) -> None:
+        allowed = EGRESO_DOCUMENT_TYPES.get(egreso_type)
+        if allowed and document_type not in allowed:
+            raise ValidationAppError(
+                "INVALID_PURCHASE_DOCUMENT_TYPE",
+                "El tipo de documento no está permitido para este tipo de egreso",
+            )
+
     async def _assert_not_immutable(self, document: InventoryDocument) -> None:
         if document.status == DocumentStatus.approved:
             raise ConflictError(
@@ -133,6 +254,8 @@ class InventoryService:
                 "DOCUMENT_REQUIRES_LINES", "Document must have at least one line"
             )
 
+        await self._validate_enabled_ingreso_type(ingreso_type)
+        self._validate_document_type_for_ingreso(ingreso_type, purchase_document_type)
         await self._validate_products_active(lines_data)
         await self._validate_quantity_mode(lines_data)
 
@@ -165,6 +288,9 @@ class InventoryService:
                 quantity=l.quantity,
                 unit_cost=l.unit_cost,
                 unit_price=l.unit_price,
+                unit_price_base=l.unit_price_base,
+                discount_type=l.discount_type,
+                discount_value=l.discount_value,
             )
             for l in lines_data
         ]
@@ -193,6 +319,11 @@ class InventoryService:
 
     async def create_egreso(
         self,
+        egreso_type: str,
+        purchase_document_type: str,
+        purchase_document_number: str | None,
+        purchase_document_date: datetime | None,
+        baja_reason: str | None,
         reference: str | None,
         notes: str | None,
         lines_data: list,
@@ -208,6 +339,27 @@ class InventoryService:
         await self._validate_products_active(lines_data)
         await self._validate_quantity_mode(lines_data)
         await self._validate_sufficient_stock(lines_data)
+        await self._validate_enabled_egreso_type(egreso_type)
+        self._validate_document_type_for_egreso(egreso_type, purchase_document_type)
+
+        if egreso_type == "baja":
+            if not baja_reason:
+                raise ValidationAppError(
+                    "BAJA_REASON_REQUIRED",
+                    "Motivo de la baja es obligatorio",
+                )
+            await self._validate_enabled_baja_reason(baja_reason)
+        else:
+            baja_reason = None
+
+        if purchase_document_date is None:
+            purchase_document_date = datetime.now(timezone.utc)
+
+        if purchase_document_type == "other" and not (notes or "").strip():
+            raise ValidationAppError(
+                "NOTES_REQUIRED_FOR_OTHER_DOCUMENT",
+                "Observaciones es obligatorio cuando el documento es Otro",
+            )
 
         year = datetime.now(timezone.utc).year
         number = await self.repo.generate_document_number(DocumentType.EG, year)
@@ -216,6 +368,11 @@ class InventoryService:
             number=number,
             doc_type=DocumentType.EG,
             status=DocumentStatus.approved,
+            ingreso_type=egreso_type,
+            purchase_document_type=purchase_document_type,
+            purchase_document_number=purchase_document_number,
+            purchase_document_date=purchase_document_date,
+            baja_reason=baja_reason,
             reference=reference,
             notes=notes,
             created_by=actor_id,
@@ -226,6 +383,9 @@ class InventoryService:
                 quantity=l.quantity,
                 unit_cost=l.unit_cost,
                 unit_price=l.unit_price,
+                unit_price_base=l.unit_price_base,
+                discount_type=l.discount_type,
+                discount_value=l.discount_value,
             )
             for l in lines_data
         ]

@@ -1,10 +1,68 @@
 import re
 from datetime import datetime
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 _LOGO_MAX_CHARS = 2_097_152
 _EMAIL_REGEX = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.IGNORECASE)
+_ALLOWED_INGRESO_TYPES = {
+    "purchase",
+    "initial_inventory",
+    "adjustment_positive",
+    "customer_return",
+    "production",
+    "transfer_received",
+    "other",
+}
+_ALLOWED_EGRESO_TYPES = {
+    "sale",
+    "baja",
+    "adjustment_negative",
+    "supplier_return",
+    "internal_consumption",
+    "transfer_sent",
+    "other",
+}
+_ALLOWED_BAJA_REASONS = {
+    "damage",
+    "expiration",
+    "loss",
+    "theft",
+    "donation",
+    "gift",
+    "destruction",
+    "sample",
+    "other",
+}
+DEFAULT_INGRESO_TYPES = [
+    "purchase",
+    "initial_inventory",
+    "adjustment_positive",
+    "customer_return",
+    "production",
+    "transfer_received",
+    "other",
+]
+DEFAULT_EGRESO_TYPES = [
+    "sale",
+    "baja",
+    "adjustment_negative",
+    "supplier_return",
+    "internal_consumption",
+    "transfer_sent",
+    "other",
+]
+DEFAULT_BAJA_REASONS = [
+    "damage",
+    "expiration",
+    "loss",
+    "theft",
+    "donation",
+    "gift",
+    "destruction",
+    "sample",
+    "other",
+]
 
 
 def _only_digits(value: str) -> str:
@@ -84,6 +142,15 @@ class CompanyConfigCreate(BaseModel):
     direccion: str | None = None
     telefono: str | None = None
     logo: str | None = None
+    enabled_ingreso_types: list[str] = Field(
+        default_factory=lambda: DEFAULT_INGRESO_TYPES.copy()
+    )
+    enabled_egreso_types: list[str] = Field(
+        default_factory=lambda: DEFAULT_EGRESO_TYPES.copy()
+    )
+    enabled_baja_reasons: list[str] = Field(
+        default_factory=lambda: DEFAULT_BAJA_REASONS.copy()
+    )
 
     @field_validator(
         "razon_social", "nombre_comercial", "direccion", "email", mode="before"
@@ -144,6 +211,33 @@ class CompanyConfigCreate(BaseModel):
             raise ValueError("logo must not exceed 2 MB")
         return v
 
+    @field_validator("enabled_ingreso_types")
+    @classmethod
+    def validate_enabled_ingreso_types(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("Selecciona al menos un tipo de ingreso")
+        if any(item not in _ALLOWED_INGRESO_TYPES for item in v):
+            raise ValueError("Tipo de ingreso inválido")
+        return list(dict.fromkeys(v))
+
+    @field_validator("enabled_egreso_types")
+    @classmethod
+    def validate_enabled_egreso_types(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("Selecciona al menos un tipo de egreso")
+        if any(item not in _ALLOWED_EGRESO_TYPES for item in v):
+            raise ValueError("Tipo de egreso inválido")
+        return list(dict.fromkeys(v))
+
+    @field_validator("enabled_baja_reasons")
+    @classmethod
+    def validate_enabled_baja_reasons(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("Selecciona al menos un motivo de baja")
+        if any(item not in _ALLOWED_BAJA_REASONS for item in v):
+            raise ValueError("Motivo de baja inválido")
+        return list(dict.fromkeys(v))
+
 
 class CompanyConfigUpdate(BaseModel):
     razon_social: str | None = None
@@ -153,6 +247,9 @@ class CompanyConfigUpdate(BaseModel):
     direccion: str | None = None
     telefono: str | None = None
     logo: str | None = None
+    enabled_ingreso_types: list[str] | None = None
+    enabled_egreso_types: list[str] | None = None
+    enabled_baja_reasons: list[str] | None = None
 
     @field_validator(
         "razon_social", "nombre_comercial", "direccion", "email", mode="before"
@@ -223,6 +320,39 @@ class CompanyConfigUpdate(BaseModel):
             raise ValueError("logo must not exceed 2 MB")
         return v
 
+    @field_validator("enabled_ingreso_types")
+    @classmethod
+    def validate_enabled_ingreso_types(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if not v:
+            raise ValueError("Selecciona al menos un tipo de ingreso")
+        if any(item not in _ALLOWED_INGRESO_TYPES for item in v):
+            raise ValueError("Tipo de ingreso inválido")
+        return list(dict.fromkeys(v))
+
+    @field_validator("enabled_egreso_types")
+    @classmethod
+    def validate_enabled_egreso_types(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if not v:
+            raise ValueError("Selecciona al menos un tipo de egreso")
+        if any(item not in _ALLOWED_EGRESO_TYPES for item in v):
+            raise ValueError("Tipo de egreso inválido")
+        return list(dict.fromkeys(v))
+
+    @field_validator("enabled_baja_reasons")
+    @classmethod
+    def validate_enabled_baja_reasons(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if not v:
+            raise ValueError("Selecciona al menos un motivo de baja")
+        if any(item not in _ALLOWED_BAJA_REASONS for item in v):
+            raise ValueError("Motivo de baja inválido")
+        return list(dict.fromkeys(v))
+
 
 class CompanyConfigResponse(BaseModel):
     id: int
@@ -233,6 +363,9 @@ class CompanyConfigResponse(BaseModel):
     telefono: str | None
     email: str
     logo: str | None
+    enabled_ingreso_types: list[str]
+    enabled_egreso_types: list[str]
+    enabled_baja_reasons: list[str]
     is_complete: bool
     created_at: datetime
     updated_at: datetime

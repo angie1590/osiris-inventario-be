@@ -36,6 +36,9 @@ class CompanyService:
             telefono=payload.telefono,
             email=payload.email,
             logo=payload.logo,
+            enabled_ingreso_types=payload.enabled_ingreso_types,
+            enabled_egreso_types=payload.enabled_egreso_types,
+            enabled_baja_reasons=payload.enabled_baja_reasons,
             updated_by=user.id,
         )
         company = await self.repo.create(company)
@@ -65,6 +68,9 @@ class CompanyService:
             "email": company.email,
             "direccion": company.direccion,
             "telefono": company.telefono,
+            "enabled_ingreso_types": company.enabled_ingreso_types,
+            "enabled_egreso_types": company.enabled_egreso_types,
+            "enabled_baja_reasons": company.enabled_baja_reasons,
         }
 
         changes = payload.model_dump(exclude_unset=True)

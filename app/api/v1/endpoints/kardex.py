@@ -3,12 +3,13 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_role
+from app.models.enums import DocumentStatus
 from app.models.enums import UserRole
 from app.models.inventory import InventoryDocument
 from app.models.kardex import KardexEntry
@@ -73,11 +74,27 @@ async def get_kardex(
     param = result.scalar_one_or_none()
     method = param.value if param else "PEPS"
 
+    excluded_doc_ids_result = await db.execute(
+        select(InventoryDocument.id).where(
+            InventoryDocument.status.in_(
+                [DocumentStatus.voided, DocumentStatus.cancelled]
+            )
+        )
+    )
+    excluded_doc_ids = [doc_id for doc_id in excluded_doc_ids_result.scalars().all()]
+
     q = (
         select(KardexEntry)
         .where(KardexEntry.product_id == product_id)
         .order_by(KardexEntry.created_at.asc(), KardexEntry.id.asc())
     )
+    if excluded_doc_ids:
+        q = q.where(
+            or_(
+                KardexEntry.document_id.is_(None),
+                KardexEntry.document_id.notin_(excluded_doc_ids),
+            )
+        )
     if date_from_dt:
         q = q.where(KardexEntry.created_at >= date_from_dt)
     if date_to_dt:
@@ -109,6 +126,13 @@ async def get_kardex(
             .order_by(KardexEntry.created_at.desc(), KardexEntry.id.desc())
             .limit(1)
         )
+        if excluded_doc_ids:
+            prev_q = prev_q.where(
+                or_(
+                    KardexEntry.document_id.is_(None),
+                    KardexEntry.document_id.notin_(excluded_doc_ids),
+                )
+            )
         prev_result = await db.execute(prev_q)
         prev = prev_result.scalar_one_or_none()
         if prev:

@@ -41,6 +41,16 @@ class AdjustType(str, enum.Enum):
     decrement = "decrement"
 
 
+class IngresoType(str, enum.Enum):
+    purchase = "purchase"
+    initial_inventory = "initial_inventory"
+    adjustment_positive = "adjustment_positive"
+    customer_return = "customer_return"
+    production = "production"
+    transfer_received = "transfer_received"
+    other = "other"
+
+
 class KardexEntryType(str, enum.Enum):
     IN = "IN"
     OUT = "OUT"

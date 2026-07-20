@@ -128,6 +128,165 @@ async def test_egreso_insufficient_stock(
 
 
 @pytest.mark.asyncio
+async def test_egreso_rejects_invalid_document_type_for_egreso_type(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Egreso Invalid Doc Type"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "sale",
+            "purchase_document_type": "none",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "INVALID_PURCHASE_DOCUMENT_TYPE"
+
+
+@pytest.mark.asyncio
+async def test_baja_requires_reason(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _create_product(client, admin_token, operator_token, "Baja Requires Reason")
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "baja",
+            "purchase_document_type": "disposal_act",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "BAJA_REASON_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_egreso_other_document_requires_notes(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Egreso Other Requires Notes"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "other",
+            "purchase_document_type": "other",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "NOTES_REQUIRED_FOR_OTHER_DOCUMENT"
+
+
+@pytest.mark.asyncio
+async def test_egreso_type_must_be_enabled_in_company_config(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+    db_session: AsyncSession,
+):
+    from app.models.company_config import CompanyConfig
+
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Egreso Disabled Type"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    result = await db_session.execute(select(CompanyConfig).limit(1))
+    company = result.scalar_one()
+    company.enabled_egreso_types = ["sale"]
+    await db_session.commit()
+
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "baja",
+            "purchase_document_type": "disposal_act",
+            "baja_reason": "damage",
+            "notes": "Donación semanal",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "EGRESO_TYPE_DISABLED"
+
+
+@pytest.mark.asyncio
+async def test_egreso_persists_type_and_document_metadata(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Egreso Metadata"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "baja",
+            "purchase_document_type": "disposal_act",
+            "baja_reason": "damage",
+            "purchase_document_number": "TR-001",
+            "reference": "Traslado bodega norte",
+            "notes": "Salida por traslado interno",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["egreso_type"] == "baja"
+    assert body["baja_reason"] == "damage"
+    assert body["purchase_document_type"] == "disposal_act"
+    assert body["purchase_document_number"] == "TR-001"
+    assert body["purchase_document_date"] is not None
+
+
+@pytest.mark.asyncio
 async def test_ingreso_nonexistent_product(client: AsyncClient, operator_token: str):
     resp = await client.post(
         "/api/v1/inventory/ingresos",

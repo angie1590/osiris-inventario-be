@@ -52,6 +52,7 @@ class InventoryDocument(Base):
     purchase_document_date: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    baja_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
     reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     adjust_type: Mapped[AdjustType | None] = mapped_column(
@@ -85,6 +86,20 @@ class InventoryDocument(Base):
     authorization_codes: Mapped[list["AuthorizationCode"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
+
+    @property
+    def egreso_type(self) -> str | None:
+        if self.doc_type != DocumentType.EG:
+            return None
+        legacy_baja_types = {
+            "damage_disposal",
+            "expiration_disposal",
+            "loss_theft_disposal",
+            "donation",
+        }
+        if self.ingreso_type in legacy_baja_types:
+            return "baja"
+        return self.ingreso_type
 
 
 class InventorySupplier(Base):
@@ -159,6 +174,11 @@ class InventoryDocumentLine(Base):
     unit_price: Mapped[Decimal] = mapped_column(
         Numeric(14, 4), nullable=False, default=0
     )
+    unit_price_base: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 4), nullable=True
+    )
+    discount_type: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    discount_value: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
     lot_id: Mapped[int | None] = mapped_column(
         ForeignKey("inventory_lots.id", ondelete="SET NULL"), nullable=True
     )

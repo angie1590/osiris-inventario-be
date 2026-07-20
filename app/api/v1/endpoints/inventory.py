@@ -402,6 +402,11 @@ async def create_egreso(
 ):
     svc = InventoryService(db)
     return await svc.create_egreso(
+        body.egreso_type,
+        body.purchase_document_type,
+        body.purchase_document_number,
+        body.purchase_document_date,
+        body.baja_reason,
         body.reference,
         body.notes,
         body.lines,
