@@ -49,6 +49,13 @@ BajaReason = Literal[
     "other",
 ]
 
+AdjustmentReason = Literal[
+    "physical_count",
+    "record_error",
+    "administrative_correction",
+    "other",
+]
+
 DiscountType = Literal["percent", "fixed"]
 
 
@@ -190,6 +197,7 @@ class EgresoCreate(BaseModel):
     purchase_document_number: str | None = Field(None, max_length=100)
     purchase_document_date: datetime | None = None
     baja_reason: BajaReason | None = None
+    adjustment_reason: AdjustmentReason | None = None
     reference: str | None = Field(None, max_length=200)
     notes: str | None = Field(None, max_length=2000)
     lines: list[DocumentLineCreate] = Field(..., min_length=1)
@@ -230,8 +238,12 @@ class EgresoCreate(BaseModel):
     def _validate_baja_reason(self):
         if self.egreso_type == "baja" and not self.baja_reason:
             raise ValueError("Motivo de la baja es obligatorio")
+        if self.egreso_type == "adjustment_negative" and not self.adjustment_reason:
+            raise ValueError("Motivo del ajuste es obligatorio")
         if self.egreso_type != "baja":
             self.baja_reason = None
+        if self.egreso_type != "adjustment_negative":
+            self.adjustment_reason = None
         return self
 
 
@@ -409,6 +421,7 @@ class DocumentResponse(BaseModel):
     ingreso_type: str | None
     egreso_type: str | None = None
     baja_reason: str | None = None
+    adjustment_reason: str | None = None
     supplier_id: int | None
     purchase_document_type: PurchaseDocumentType | None
     purchase_document_number: str | None

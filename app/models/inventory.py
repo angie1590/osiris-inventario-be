@@ -53,6 +53,7 @@ class InventoryDocument(Base):
         DateTime(timezone=True), nullable=True
     )
     baja_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    adjustment_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
     reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     adjust_type: Mapped[AdjustType | None] = mapped_column(

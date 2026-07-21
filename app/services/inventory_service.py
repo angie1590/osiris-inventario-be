@@ -18,6 +18,7 @@ from app.models.inventory import (
     InventoryDocumentLine,
     InventorySupplier,
 )
+from app.models.kardex import InventoryLot
 from app.models.user import User
 from app.repositories.inventory_repository import InventoryRepository
 from app.repositories.product_repository import ProductRepository
@@ -65,6 +66,22 @@ DEFAULT_BAJA_REASONS = {
     "gift",
     "destruction",
     "sample",
+    "other",
+}
+
+DEFAULT_ADJUSTMENT_REASONS = {
+    "physical_count",
+    "record_error",
+    "administrative_correction",
+    "other",
+}
+
+INVENTORY_EGRESO_TYPES = {
+    "baja",
+    "adjustment_negative",
+    "supplier_return",
+    "internal_consumption",
+    "transfer_sent",
     "other",
 }
 
@@ -209,6 +226,69 @@ class InventoryService:
                 "El motivo de la baja no está habilitado para la empresa",
             )
 
+    def _validate_adjustment_reason(self, adjustment_reason: str) -> None:
+        if adjustment_reason not in DEFAULT_ADJUSTMENT_REASONS:
+            raise ValidationAppError(
+                "ADJUSTMENT_REASON_INVALID",
+                "Motivo del ajuste inválido",
+            )
+
+    async def _resolve_egreso_unit_costs(self, lines_data: list, method: str) -> list[Decimal]:
+        if method == "PEPS":
+            product_ids = list({line.product_id for line in lines_data})
+            lots_result = await self.db.execute(
+                select(InventoryLot)
+                .where(
+                    InventoryLot.product_id.in_(product_ids),
+                    InventoryLot.quantity_available > 0,
+                )
+                .order_by(
+                    InventoryLot.product_id.asc(),
+                    InventoryLot.lot_date.asc(),
+                    InventoryLot.id.asc(),
+                )
+            )
+            lots_by_product: dict[int, list[dict[str, Decimal]]] = {}
+            for lot in lots_result.scalars().all():
+                lots_by_product.setdefault(lot.product_id, []).append(
+                    {
+                        "available": Decimal(str(lot.quantity_available)),
+                        "unit_cost": Decimal(str(lot.unit_cost)),
+                    }
+                )
+
+            costs: list[Decimal] = []
+            for line in lines_data:
+                qty = Decimal(str(line.quantity))
+                remaining = qty
+                consumed_value = Decimal("0")
+                product_lots = lots_by_product.get(line.product_id, [])
+
+                for lot in product_lots:
+                    if remaining <= 0:
+                        break
+                    available = lot["available"]
+                    if available <= 0:
+                        continue
+                    consumed = min(available, remaining)
+                    consumed_value += consumed * lot["unit_cost"]
+                    lot["available"] = available - consumed
+                    remaining -= consumed
+
+                unit_cost = (consumed_value / qty) if qty > 0 else Decimal("0")
+                costs.append(unit_cost)
+
+            return costs
+
+        avg_by_product: dict[int, Decimal] = {}
+        for line in lines_data:
+            if line.product_id in avg_by_product:
+                continue
+            _, _, avg_cost = await self.kardex._get_current_balance(line.product_id)
+            avg_by_product[line.product_id] = Decimal(str(avg_cost))
+
+        return [avg_by_product.get(line.product_id, Decimal("0")) for line in lines_data]
+
     def _validate_document_type_for_ingreso(
         self, ingreso_type: str, document_type: str
     ) -> None:
@@ -324,6 +404,7 @@ class InventoryService:
         purchase_document_number: str | None,
         purchase_document_date: datetime | None,
         baja_reason: str | None,
+        adjustment_reason: str | None,
         reference: str | None,
         notes: str | None,
         lines_data: list,
@@ -352,6 +433,16 @@ class InventoryService:
         else:
             baja_reason = None
 
+        if egreso_type == "adjustment_negative":
+            if not adjustment_reason:
+                raise ValidationAppError(
+                    "ADJUSTMENT_REASON_REQUIRED",
+                    "Motivo del ajuste es obligatorio",
+                )
+            self._validate_adjustment_reason(adjustment_reason)
+        else:
+            adjustment_reason = None
+
         if purchase_document_date is None:
             purchase_document_date = datetime.now(timezone.utc)
 
@@ -373,28 +464,37 @@ class InventoryService:
             purchase_document_number=purchase_document_number,
             purchase_document_date=purchase_document_date,
             baja_reason=baja_reason,
+            adjustment_reason=adjustment_reason,
             reference=reference,
             notes=notes,
             created_by=actor_id,
+        )
+        is_inventory_egreso = egreso_type in INVENTORY_EGRESO_TYPES
+        method = await self._get_kardex_method()
+        costs = (
+            await self._resolve_egreso_unit_costs(lines_data, method)
+            if is_inventory_egreso
+            else [Decimal(str(getattr(l, "unit_cost", 0) or 0)) for l in lines_data]
         )
         lines = [
             InventoryDocumentLine(
                 product_id=l.product_id,
                 quantity=l.quantity,
-                unit_cost=l.unit_cost,
-                unit_price=l.unit_price,
-                unit_price_base=l.unit_price_base,
-                discount_type=l.discount_type,
-                discount_value=l.discount_value,
+                unit_cost=costs[idx],
+                unit_price=l.unit_price if not is_inventory_egreso else Decimal("0"),
+                unit_price_base=(
+                    l.unit_price_base if not is_inventory_egreso else None
+                ),
+                discount_type=(l.discount_type if not is_inventory_egreso else None),
+                discount_value=(l.discount_value if not is_inventory_egreso else None),
             )
-            for l in lines_data
+            for idx, l in enumerate(lines_data)
         ]
         doc = await self.repo.create_document(doc, lines)
 
         for line in doc.lines:
             await self.product_repo.update_stock(line.product_id, -line.quantity)
 
-        method = await self._get_kardex_method()
         kardex = KardexService(self.db, method)
         await kardex.record_entry(doc, doc.lines)
 

@@ -48,6 +48,26 @@ _ADJUST_TYPE_LABELS = {
     "decrement": "Decremento",
 }
 
+_INGRESO_TYPE_LABELS = {
+    "purchase": "Compra",
+    "initial_inventory": "Inventario inicial",
+    "adjustment_positive": "Ajuste positivo",
+    "customer_return": "Devolucion de cliente",
+    "production": "Produccion",
+    "transfer_received": "Transferencia recibida",
+    "other": "Otro",
+}
+
+_EGRESO_TYPE_LABELS = {
+    "sale": "Venta",
+    "baja": "Baja",
+    "adjustment_negative": "Ajuste negativo",
+    "supplier_return": "Devolucion a proveedor",
+    "internal_consumption": "Consumo interno",
+    "transfer_sent": "Transferencia enviada",
+    "other": "Otro",
+}
+
 
 def _status_label(value: str | None) -> str:
     if not value:
@@ -65,6 +85,24 @@ def _adjust_type_label(value: str | None) -> str:
     if not value:
         return ""
     return _ADJUST_TYPE_LABELS.get(value.lower(), value)
+
+
+def _normalize_egreso_type(value: str | None) -> str:
+    if not value:
+        return "other"
+    legacy_baja_types = {
+        "damage_disposal",
+        "expiration_disposal",
+        "loss_theft_disposal",
+        "donation",
+    }
+    return "baja" if value in legacy_baja_types else value
+
+
+def _movement_type_label(flow: Literal["ingresos", "egresos"], value: str) -> str:
+    if flow == "ingresos":
+        return _INGRESO_TYPE_LABELS.get(value, value)
+    return _EGRESO_TYPE_LABELS.get(value, value)
 
 
 async def _username_map(db: AsyncSession, user_ids: set[int]) -> dict[int, str]:
@@ -858,23 +896,85 @@ async def report_consolidado(
     date_from: str = Query(...),
     date_to: str = Query(...),
     format: Literal["json", "pdf", "excel"] = "json",
+    metric: Literal["quantity", "monetary"] = "quantity",
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(_read_roles),
     _company: None = Depends(require_company_configured),
 ):
     date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
 
-    # Totals per doc type
-    counts = {}
-    for doc_type in DocumentType:
-        result = await db.execute(
-            select(func.count(InventoryDocument.id)).where(
-                InventoryDocument.doc_type == doc_type,
-                InventoryDocument.created_at >= date_from_dt,
-                InventoryDocument.created_at <= date_to_dt,
-            )
+    result = await db.execute(
+        select(
+            InventoryDocument.doc_type,
+            InventoryDocument.ingreso_type,
+            InventoryDocument.status,
+        ).where(
+            InventoryDocument.created_at >= date_from_dt,
+            InventoryDocument.created_at <= date_to_dt,
+            InventoryDocument.doc_type.in_([DocumentType.IN, DocumentType.EG]),
         )
-        counts[doc_type.value] = result.scalar() or 0
+    )
+
+    movements = {"IN": 0, "EG": 0}
+    movements_amount = {"IN": Decimal("0"), "EG": Decimal("0")}
+    status_summary = {
+        "pending": 0,
+        "approved": 0,
+        "cancelled": 0,
+        "voided": 0,
+    }
+    ingresos_by_type: dict[str, int] = {}
+    egresos_by_type: dict[str, int] = {}
+    ingresos_amount_by_type: dict[str, Decimal] = {}
+    egresos_amount_by_type: dict[str, Decimal] = {}
+
+    for doc_type, raw_type, status in result.all():
+        status_key = status.value if status else "pending"
+        status_summary[status_key] = status_summary.get(status_key, 0) + 1
+
+        if doc_type == DocumentType.IN:
+            movements["IN"] += 1
+            type_key = raw_type or "other"
+            ingresos_by_type[type_key] = ingresos_by_type.get(type_key, 0) + 1
+            continue
+
+        movements["EG"] += 1
+        type_key = _normalize_egreso_type(raw_type)
+        egresos_by_type[type_key] = egresos_by_type.get(type_key, 0) + 1
+
+    amount_result = await db.execute(
+        select(
+            InventoryDocument.doc_type,
+            InventoryDocument.ingreso_type,
+            InventoryDocumentLine.quantity,
+            InventoryDocumentLine.unit_cost,
+        )
+        .join(
+            InventoryDocumentLine,
+            InventoryDocumentLine.document_id == InventoryDocument.id,
+        )
+        .where(
+            InventoryDocument.created_at >= date_from_dt,
+            InventoryDocument.created_at <= date_to_dt,
+            InventoryDocument.doc_type.in_([DocumentType.IN, DocumentType.EG]),
+        )
+    )
+
+    for doc_type, raw_type, quantity, unit_cost in amount_result.all():
+        amount = (quantity or Decimal("0")) * (unit_cost or Decimal("0"))
+        if doc_type == DocumentType.IN:
+            movements_amount["IN"] += amount
+            type_key = raw_type or "other"
+            ingresos_amount_by_type[type_key] = (
+                ingresos_amount_by_type.get(type_key, Decimal("0")) + amount
+            )
+            continue
+
+        movements_amount["EG"] += amount
+        type_key = _normalize_egreso_type(raw_type)
+        egresos_amount_by_type[type_key] = (
+            egresos_amount_by_type.get(type_key, Decimal("0")) + amount
+        )
 
     total_products = await db.execute(
         select(func.count(Product.id)).where(Product.status == "active")
@@ -887,7 +987,34 @@ async def report_consolidado(
 
     payload = {
         "period": {"from": date_from_dt.isoformat(), "to": date_to_dt.isoformat()},
-        "movements": counts,
+        "movements": movements,
+        "movements_by_type": {
+            "ingresos": dict(sorted(ingresos_by_type.items())),
+            "egresos": dict(sorted(egresos_by_type.items())),
+        },
+        "movements_amount": {
+            "IN": float(movements_amount["IN"]),
+            "EG": float(movements_amount["EG"]),
+        },
+        "movements_amount_by_type": {
+            "ingresos": dict(
+                sorted(
+                    (key, float(value))
+                    for key, value in ingresos_amount_by_type.items()
+                )
+            ),
+            "egresos": dict(
+                sorted(
+                    (key, float(value))
+                    for key, value in egresos_amount_by_type.items()
+                )
+            ),
+        },
+        "status_summary": status_summary,
+        "total_movements": movements["IN"] + movements["EG"],
+        "total_movements_amount": float(
+            movements_amount["IN"] + movements_amount["EG"]
+        ),
         "active_products": total_products.scalar(),
         "products_below_minimum": bajo_stock_count.scalar(),
     }
@@ -895,7 +1022,36 @@ async def report_consolidado(
         return payload
 
     headers = ["Métrica", "Valor"]
-    rows = [[f"Movimientos {_doc_type_label(k)}", v] for k, v in counts.items()]
+    if metric == "monetary":
+        movimientos_ingreso = payload["movements_amount"]["IN"]
+        movimientos_egreso = payload["movements_amount"]["EG"]
+        total_movimientos = payload["total_movements_amount"]
+        ingresos_tipo = payload["movements_amount_by_type"]["ingresos"]
+        egresos_tipo = payload["movements_amount_by_type"]["egresos"]
+    else:
+        movimientos_ingreso = movements["IN"]
+        movimientos_egreso = movements["EG"]
+        total_movimientos = payload["total_movements"]
+        ingresos_tipo = payload["movements_by_type"]["ingresos"]
+        egresos_tipo = payload["movements_by_type"]["egresos"]
+
+    rows = [
+        ["Movimientos Ingreso", movimientos_ingreso],
+        ["Movimientos Egreso", movimientos_egreso],
+        ["Movimientos totales", total_movimientos],
+    ]
+    rows.append(["", ""])
+    rows.append(["Ingresos por tipo", ""])
+    for key, value in ingresos_tipo.items():
+        rows.append([f"- {_movement_type_label('ingresos', key)}", value])
+    rows.append(["", ""])
+    rows.append(["Egresos por tipo", ""])
+    for key, value in egresos_tipo.items():
+        rows.append([f"- {_movement_type_label('egresos', key)}", value])
+    rows.append(["", ""])
+    rows.append(["Estado de documentos", ""])
+    for key, value in payload["status_summary"].items():
+        rows.append([f"- {_status_label(key)}", value])
     rows.extend(
         [
             ["Productos activos", payload["active_products"]],

@@ -407,6 +407,7 @@ async def create_egreso(
         body.purchase_document_number,
         body.purchase_document_date,
         body.baja_reason,
+        body.adjustment_reason,
         body.reference,
         body.notes,
         body.lines,
