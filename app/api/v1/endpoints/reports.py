@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -66,6 +66,13 @@ _EGRESO_TYPE_LABELS = {
     "internal_consumption": "Consumo interno",
     "transfer_sent": "Transferencia enviada",
     "other": "Otro",
+}
+
+_LEGACY_BAJA_TYPES = {
+    "damage_disposal",
+    "expiration_disposal",
+    "loss_theft_disposal",
+    "donation",
 }
 
 
@@ -272,6 +279,7 @@ async def report_settings(
 async def report_ingresos(
     date_from: str = Query(...),
     date_to: str = Query(...),
+    type_: str | None = Query(None, alias="type"),
     product_id: int | None = None,
     category_id: int | None = None,
     created_by: int | None = None,
@@ -290,6 +298,8 @@ async def report_ingresos(
     )
     if created_by:
         q = q.where(InventoryDocument.created_by == created_by)
+    if type_:
+        q = q.where(InventoryDocument.ingreso_type == type_)
     if product_id:
         q = q.join(InventoryDocumentLine).where(
             InventoryDocumentLine.product_id == product_id
@@ -354,6 +364,7 @@ async def report_ingresos(
 async def report_egresos(
     date_from: str = Query(...),
     date_to: str = Query(...),
+    type_: str | None = Query(None, alias="type"),
     product_id: int | None = None,
     created_by: int | None = None,
     format: Literal["json", "pdf", "excel"] = "json",
@@ -372,6 +383,16 @@ async def report_egresos(
     )
     if created_by:
         q = q.where(InventoryDocument.created_by == created_by)
+    if type_:
+        if type_ == "baja":
+            q = q.where(
+                or_(
+                    InventoryDocument.ingreso_type == type_,
+                    InventoryDocument.ingreso_type.in_(_LEGACY_BAJA_TYPES),
+                )
+            )
+        else:
+            q = q.where(InventoryDocument.ingreso_type == type_)
     if product_id:
         q = q.join(InventoryDocumentLine).where(
             InventoryDocumentLine.product_id == product_id
@@ -603,6 +624,8 @@ async def report_stock(
         return [
             {
                 "id": p.id,
+                "isbn": p.isbn,
+                "codigo_interno": p.codigo_interno,
                 "name": p.name,
                 "stock_actual": float(p.stock_actual),
                 "stock_minimo": float(p.stock_minimo),

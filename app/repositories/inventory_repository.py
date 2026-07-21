@@ -18,6 +18,14 @@ from app.models.enums import DocumentStatus, DocumentType
 from app.models.system_param import SystemParam
 
 
+LEGACY_BAJA_TYPES = {
+    "damage_disposal",
+    "expiration_disposal",
+    "loss_theft_disposal",
+    "donation",
+}
+
+
 class InventoryRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -114,6 +122,7 @@ class InventoryRepository:
         date_to: datetime | None = None,
         product_id: int | None = None,
         created_by: int | None = None,
+        movement_type: str | None = None,
         status: DocumentStatus | None = None,
         limit: int = 50,
         cursor: int | None = None,
@@ -136,6 +145,18 @@ class InventoryRepository:
             q = q.where(InventoryDocument.created_at <= date_to)
         if created_by:
             q = q.where(InventoryDocument.created_by == created_by)
+        if movement_type:
+            if doc_type == DocumentType.IN:
+                q = q.where(InventoryDocument.ingreso_type == movement_type)
+            elif doc_type == DocumentType.EG:
+                if movement_type == "baja":
+                    q = q.where(
+                        InventoryDocument.ingreso_type.in_(
+                            [movement_type, *LEGACY_BAJA_TYPES]
+                        )
+                    )
+                else:
+                    q = q.where(InventoryDocument.ingreso_type == movement_type)
         if status:
             q = q.where(InventoryDocument.status == status)
         if product_id:

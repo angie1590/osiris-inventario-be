@@ -51,6 +51,19 @@ async def _seed_ingreso(client, admin_token, operator_token):
     return prod_id
 
 
+async def _seed_egreso(client, admin_token, operator_token, egreso_type="sale"):
+    prod_id = await _seed_ingreso(client, admin_token, operator_token)
+    await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": egreso_type,
+            "lines": [{"product_id": prod_id, "quantity": "1", "unit_price": "3.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    return prod_id
+
+
 @pytest.mark.asyncio
 async def test_report_ingresos_json(
     client: AsyncClient, admin_token: str, operator_token: str
@@ -86,6 +99,57 @@ async def test_report_ingresos_json_date_only_includes_same_day(
     data = resp.json()
     assert isinstance(data, list)
     assert len(data) >= 1
+
+
+@pytest.mark.asyncio
+async def test_report_ingresos_filters_by_type(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _seed_ingreso(client, admin_token, operator_token)
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "ingreso_type": "production",
+            "lines": [{"product_id": prod_id, "quantity": "2", "unit_cost": "2.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    frm, to = _range(days_back=1)
+    resp = await client.get(
+        "/api/v1/reports/ingresos",
+        params={"date_from": frm, "date_to": to, "format": "json", "type": "production"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+
+
+@pytest.mark.asyncio
+async def test_report_egresos_filters_by_type(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    await _seed_egreso(client, admin_token, operator_token, egreso_type="sale")
+    await _seed_egreso(
+        client,
+        admin_token,
+        operator_token,
+        egreso_type="internal_consumption",
+    )
+    frm, to = _range(days_back=1)
+    resp = await client.get(
+        "/api/v1/reports/egresos",
+        params={
+            "date_from": frm,
+            "date_to": to,
+            "format": "json",
+            "type": "internal_consumption",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
 
 
 @pytest.mark.asyncio

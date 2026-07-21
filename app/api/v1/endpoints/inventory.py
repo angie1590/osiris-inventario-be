@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -357,6 +357,7 @@ async def list_ingresos(
     date_to: datetime | None = None,
     product_id: int | None = None,
     created_by: int | None = None,
+    type_: str | None = Query(None, alias="type"),
     limit: int = 50,
     cursor: int | None = None,
     db: AsyncSession = Depends(get_db),
@@ -369,6 +370,7 @@ async def list_ingresos(
         date_to,
         product_id,
         created_by,
+        type_,
         limit=limit,
         cursor=cursor,
     )
@@ -423,6 +425,7 @@ async def list_egresos(
     date_to: datetime | None = None,
     product_id: int | None = None,
     created_by: int | None = None,
+    type_: str | None = Query(None, alias="type"),
     limit: int = 50,
     cursor: int | None = None,
     db: AsyncSession = Depends(get_db),
@@ -435,6 +438,7 @@ async def list_egresos(
         date_to,
         product_id,
         created_by,
+        type_,
         limit=limit,
         cursor=cursor,
     )
