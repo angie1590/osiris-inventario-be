@@ -104,13 +104,18 @@ async def get_kardex(
     entries = list(result.scalars().all())
 
     doc_ids = {e.document_id for e in entries if e.document_id}
-    doc_numbers: dict[int, tuple[str, str]] = {}
+    doc_numbers: dict[int, tuple[str, str, str | None, str | None]] = {}
     if doc_ids:
         docs_result = await db.execute(
             select(InventoryDocument).where(InventoryDocument.id.in_(doc_ids))
         )
         for d in docs_result.scalars().all():
-            doc_numbers[d.id] = (d.number, d.doc_type.value)
+            doc_numbers[d.id] = (
+                d.number,
+                d.doc_type.value,
+                d.ingreso_type,
+                d.egreso_type,
+            )
 
     # Get opening balance (last entry before date_from)
     opening_qty = Decimal("0")
@@ -160,8 +165,10 @@ async def get_kardex(
             balance_value=e.balance_value,
             weighted_avg_cost=e.weighted_avg_cost,
             lot_id=e.lot_id,
-            document_number=doc_numbers.get(e.document_id, (None, None))[0],
-            document_doc_type=doc_numbers.get(e.document_id, (None, None))[1],
+            document_number=doc_numbers.get(e.document_id, (None, None, None, None))[0],
+            document_doc_type=doc_numbers.get(e.document_id, (None, None, None, None))[1],
+            document_ingreso_type=doc_numbers.get(e.document_id, (None, None, None, None))[2],
+            document_egreso_type=doc_numbers.get(e.document_id, (None, None, None, None))[3],
             created_at=e.created_at,
         )
         for e in entries

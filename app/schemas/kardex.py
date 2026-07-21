@@ -21,6 +21,8 @@ class KardexEntryResponse(BaseModel):
     lot_id: int | None
     document_number: str | None = None
     document_doc_type: str | None = None
+    document_ingreso_type: str | None = None
+    document_egreso_type: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
