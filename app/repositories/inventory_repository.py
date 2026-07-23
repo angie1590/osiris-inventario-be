@@ -10,6 +10,9 @@ from sqlalchemy.orm import selectinload
 
 from app.models.inventory import (
     AuthorizationCode,
+    CountSequence,
+    InventoryCount,
+    InventoryCountLine,
     DocumentSequence,
     InventoryDocument,
     InventoryDocumentLine,
@@ -63,6 +66,24 @@ class InventoryRepository:
         await self.db.flush()
         padding = await self._get_doc_number_padding()
         return f"{doc_type.value}-{year}-{seq.last_number:0{padding}d}"
+
+    async def generate_count_number(self, year: int) -> str:
+        result = await self.db.execute(
+            select(CountSequence)
+            .where(CountSequence.prefix == "CONT", CountSequence.year == year)
+            .with_for_update()
+        )
+        seq = result.scalar_one_or_none()
+
+        if not seq:
+            seq = CountSequence(prefix="CONT", year=year, last_number=0)
+            self.db.add(seq)
+            await self.db.flush()
+
+        seq.last_number += 1
+        await self.db.flush()
+        padding = await self._get_doc_number_padding()
+        return f"CONT-{year}-{seq.last_number:0{padding}d}"
 
     async def create_document(
         self, document: InventoryDocument, lines: list[InventoryDocumentLine]
@@ -188,3 +209,54 @@ class InventoryRepository:
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def create_count(
+        self, count: InventoryCount, lines: list[InventoryCountLine]
+    ) -> InventoryCount:
+        self.db.add(count)
+        await self.db.flush()
+        for line in lines:
+            line.count_id = count.id
+            self.db.add(line)
+        await self.db.flush()
+        return await self.get_count_by_id(count.id)
+
+    async def get_count_by_id(self, count_id: int) -> InventoryCount | None:
+        result = await self.db.execute(
+            select(InventoryCount)
+            .where(InventoryCount.id == count_id)
+            .options(
+                selectinload(InventoryCount.lines),
+                selectinload(InventoryCount.positive_adjustment_document),
+                selectinload(InventoryCount.negative_adjustment_document),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_counts(
+        self,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        status: str | None = None,
+        limit: int = 50,
+        cursor: int | None = None,
+    ) -> list[InventoryCount]:
+        q = (
+            select(InventoryCount)
+            .options(
+                selectinload(InventoryCount.lines),
+                selectinload(InventoryCount.positive_adjustment_document),
+                selectinload(InventoryCount.negative_adjustment_document),
+            )
+            .order_by(InventoryCount.id.desc())
+        )
+        if date_from:
+            q = q.where(InventoryCount.created_at >= date_from)
+        if date_to:
+            q = q.where(InventoryCount.created_at <= date_to)
+        if status:
+            q = q.where(InventoryCount.status == status)
+        if cursor:
+            q = q.where(InventoryCount.id < cursor)
+        result = await self.db.execute(q.limit(limit))
+        return list(result.scalars().unique().all())

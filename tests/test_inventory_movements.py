@@ -94,6 +94,7 @@ async def test_egreso_decreases_stock(
     resp = await client.post(
         "/api/v1/inventory/egresos",
         json={
+            "seller_name": "VENDEDOR TEST",
             "lines": [
                 {"product_id": prod_id, "quantity": "5.00", "unit_price": "10.00"}
             ]
@@ -128,6 +129,132 @@ async def test_egreso_insufficient_stock(
 
 
 @pytest.mark.asyncio
+async def test_sale_allows_document_type_none(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Egreso Without Document"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "sale",
+            "purchase_document_type": "none",
+            "seller_name": "VENDEDOR TEST",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["purchase_document_type"] == "none"
+    assert resp.json()["purchase_document_number"] == "Venta sin documento"
+
+
+@pytest.mark.asyncio
+async def test_sale_requires_document_number_when_document_is_not_none(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Sale Requires Document Number"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "sale",
+            "purchase_document_type": "invoice",
+            "seller_name": "VENDEDOR TEST",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "PURCHASE_DOCUMENT_NUMBER_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_sale_requires_seller_name(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Sale Requires Seller"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "sale",
+            "purchase_document_type": "none",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "SELLER_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_sale_rejects_seller_not_in_company_config(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+    db_session: AsyncSession,
+):
+    from app.models.company_config import CompanyConfig
+
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Sale Invalid Seller"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    result = await db_session.execute(select(CompanyConfig).limit(1))
+    company = result.scalar_one()
+    company.sellers = ["OTRO VENDEDOR"]
+    await db_session.commit()
+
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "sale",
+            "purchase_document_type": "none",
+            "seller_name": "VENDEDOR TEST",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "SELLER_NOT_ALLOWED"
+
+
+@pytest.mark.asyncio
 async def test_egreso_rejects_invalid_document_type_for_egreso_type(
     client: AsyncClient, admin_token: str, operator_token: str
 ):
@@ -145,7 +272,8 @@ async def test_egreso_rejects_invalid_document_type_for_egreso_type(
         "/api/v1/inventory/egresos",
         json={
             "egreso_type": "sale",
-            "purchase_document_type": "none",
+            "purchase_document_type": "disposal_act",
+            "seller_name": "VENDEDOR TEST",
             "lines": [{"product_id": prod_id, "quantity": "1.00"}],
         },
         headers={"Authorization": f"Bearer {operator_token}"},
@@ -547,7 +675,10 @@ async def test_void_egreso_restores_stock(client, admin_token, operator_token):
     )
     eg = (await client.post(
         "/api/v1/inventory/egresos",
-        json={"lines": [{"product_id": prod_id, "quantity": "5.00", "unit_price": "9.00"}]},
+        json={
+            "seller_name": "VENDEDOR TEST",
+            "lines": [{"product_id": prod_id, "quantity": "5.00", "unit_price": "9.00"}],
+        },
         headers={"Authorization": f"Bearer {operator_token}"},
     )).json()
     assert await _stock(client, admin_token, prod_id) == 15.0
@@ -637,7 +768,10 @@ async def test_void_ingreso_consumed_fails(client, admin_token, operator_token):
     # Consume all stock with an egreso
     await client.post(
         "/api/v1/inventory/egresos",
-        json={"lines": [{"product_id": prod_id, "quantity": "10.00", "unit_price": "9.00"}]},
+        json={
+            "seller_name": "VENDEDOR TEST",
+            "lines": [{"product_id": prod_id, "quantity": "10.00", "unit_price": "9.00"}],
+        },
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     resp = await client.post(
@@ -668,7 +802,10 @@ async def test_void_ingreso_consumed_fails_weighted_average(
     )).json()
     await client.post(
         "/api/v1/inventory/egresos",
-        json={"lines": [{"product_id": prod_id, "quantity": "10.00", "unit_price": "9.00"}]},
+        json={
+            "seller_name": "VENDEDOR TEST",
+            "lines": [{"product_id": prod_id, "quantity": "10.00", "unit_price": "9.00"}],
+        },
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     resp = await client.post(

@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -13,6 +13,7 @@ from app.core.deps import require_company_configured, require_role
 from app.core.exceptions import NotFoundError, ValidationAppError
 from app.models.enums import DocumentStatus, DocumentType, UserRole
 from app.models.inventory import (
+    InventoryCount,
     InventoryDocument,
     InventoryDocumentAttachment,
     InventorySupplier,
@@ -27,6 +28,11 @@ from app.schemas.inventory import (
     DocumentResponse,
     DocumentAttachmentResponse,
     EgresoCreate,
+    AdjustmentIncrementCostPreview,
+    InventoryCountCreate,
+    InventoryCountApply,
+    InventoryCountResponse,
+    InventoryCountUpdate,
     IngresoCreate,
     SupplierCreate,
     SupplierResponse,
@@ -42,6 +48,93 @@ _operator_up = require_role(UserRole.admin, UserRole.operator)
 _admin_only = require_role(UserRole.admin)
 _approver_roles = require_role(UserRole.admin, UserRole.supervisor)
 _read_roles = require_role(UserRole.admin, UserRole.operator, UserRole.supervisor)
+
+
+# --- Conteos ---
+
+
+@router.post(
+    "/conteos", response_model=InventoryCountResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_count(
+    body: InventoryCountCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_operator_up),
+    _company: None = Depends(require_company_configured),
+):
+    svc = InventoryService(db)
+    return await svc.create_count(
+        body.description,
+        body.lines,
+        current_user.id,
+        current_user.username,
+        request,
+    )
+
+
+@router.get("/conteos", response_model=list[InventoryCountResponse])
+async def list_counts(
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    cursor: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    repo = InventoryRepository(db)
+    return await repo.list_counts(date_from, date_to, status, limit, cursor)
+
+
+@router.get("/conteos/{count_id}", response_model=InventoryCountResponse)
+async def get_count(
+    count_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    repo = InventoryRepository(db)
+    count = await repo.get_count_by_id(count_id)
+    if not count:
+        raise NotFoundError("COUNT_NOT_FOUND", "Conteo no encontrado")
+    return count
+
+
+@router.patch("/conteos/{count_id}", response_model=InventoryCountResponse)
+async def update_count(
+    count_id: int,
+    body: InventoryCountUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_operator_up),
+):
+    svc = InventoryService(db)
+    return await svc.update_count(
+        count_id,
+        body.description,
+        body.lines,
+        current_user.id,
+        current_user.username,
+        request,
+    )
+
+
+@router.post("/conteos/{count_id}/apply", response_model=InventoryCountResponse)
+async def apply_count(
+    count_id: int,
+    request: Request,
+    body: InventoryCountApply | None = Body(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_operator_up),
+):
+    svc = InventoryService(db)
+    return await svc.apply_count(
+        count_id,
+        current_user.id,
+        current_user.username,
+        body.line_costs if body else [],
+        request,
+    )
 
 
 # --- Ingresos ---
@@ -407,6 +500,7 @@ async def create_egreso(
         body.egreso_type,
         body.purchase_document_type,
         body.purchase_document_number,
+        body.seller_name,
         body.purchase_document_date,
         body.baja_reason,
         body.adjustment_reason,
@@ -566,6 +660,19 @@ async def get_baja(
 
 
 # --- Ajustes ---
+
+
+@router.get(
+    "/ajustes/cost-preview",
+    response_model=list[AdjustmentIncrementCostPreview],
+)
+async def list_adjustment_cost_preview(
+    product_ids: list[int] = Query(default=[]),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    svc = InventoryService(db)
+    return await svc.list_adjustment_increment_cost_previews(product_ids)
 
 
 @router.post(

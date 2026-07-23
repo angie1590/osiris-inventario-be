@@ -39,6 +39,7 @@ class CompanyService:
             enabled_ingreso_types=payload.enabled_ingreso_types,
             enabled_egreso_types=payload.enabled_egreso_types,
             enabled_baja_reasons=payload.enabled_baja_reasons,
+            sellers=payload.sellers,
             updated_by=user.id,
         )
         company = await self.repo.create(company)
@@ -71,6 +72,7 @@ class CompanyService:
             "enabled_ingreso_types": company.enabled_ingreso_types,
             "enabled_egreso_types": company.enabled_egreso_types,
             "enabled_baja_reasons": company.enabled_baja_reasons,
+            "sellers": company.sellers,
         }
 
         changes = payload.model_dump(exclude_unset=True)

@@ -1,8 +1,10 @@
 import hashlib
 import re
 import secrets
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
+from types import SimpleNamespace
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,11 +16,13 @@ from app.models.enums import AdjustType, AuditAction, DocumentStatus, DocumentTy
 from app.models.enums import UserRole
 from app.models.inventory import (
     AuthorizationCode,
+    InventoryCount,
+    InventoryCountLine,
     InventoryDocument,
     InventoryDocumentLine,
     InventorySupplier,
 )
-from app.models.kardex import InventoryLot
+from app.models.kardex import InventoryLot, KardexEntry
 from app.models.user import User
 from app.repositories.inventory_repository import InventoryRepository
 from app.repositories.product_repository import ProductRepository
@@ -48,7 +52,7 @@ INGRESO_DOCUMENT_TYPES: dict[str, set[str]] = {
 }
 
 EGRESO_DOCUMENT_TYPES: dict[str, set[str]] = {
-    "sale": {"invoice", "sales_note"},
+    "sale": {"invoice", "sales_note", "none"},
     "baja": {"disposal_act", "none"},
     "adjustment_negative": {"adjustment_act", "none"},
     "supplier_return": {"supplier_return", "invoice", "transfer_note"},
@@ -315,6 +319,128 @@ class InventoryService:
                 "DOCUMENT_IS_IMMUTABLE", "Approved documents cannot be modified"
             )
 
+    async def _build_count_lines(self, lines_data: list) -> list[InventoryCountLine]:
+        await self._validate_products_active(lines_data)
+        quantity_lines = [
+            SimpleNamespace(product_id=line.product_id, quantity=line.physical_quantity)
+            for line in lines_data
+        ]
+        await self._validate_quantity_mode(quantity_lines)
+
+        grouped: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+        for line in lines_data:
+            grouped[line.product_id] += Decimal(str(line.physical_quantity))
+
+        count_lines: list[InventoryCountLine] = []
+        for product_id, physical_quantity in grouped.items():
+            product = await self.product_repo.get_by_id(product_id)
+            if not product:
+                raise ValidationAppError(
+                    "PRODUCT_NOT_FOUND", f"Product {product_id} not found"
+                )
+            system_quantity = Decimal(str(product.stock_actual))
+            count_lines.append(
+                InventoryCountLine(
+                    product_id=product_id,
+                    product_name_snapshot=product.name,
+                    product_isbn_snapshot=product.isbn,
+                    product_codigo_interno_snapshot=product.codigo_interno,
+                    system_quantity=system_quantity,
+                    physical_quantity=physical_quantity,
+                    difference_quantity=physical_quantity - system_quantity,
+                )
+            )
+
+        count_lines.sort(key=lambda line: line.product_name_snapshot)
+        return count_lines
+
+    async def _get_count_or_fail(self, count_id: int) -> InventoryCount:
+        count = await self.repo.get_count_by_id(count_id)
+        if not count:
+            raise NotFoundError("COUNT_NOT_FOUND", "Conteo no encontrado")
+        return count
+
+    def _assert_count_editable(self, count: InventoryCount) -> None:
+        if count.status != "draft":
+            raise ConflictError(
+                "COUNT_NOT_EDITABLE", "Solo se puede editar un conteo en borrador"
+            )
+
+    async def _resolve_count_positive_unit_cost(self, product_id: int) -> Decimal:
+        _, _, avg_cost = await self.kardex._get_current_balance(product_id)
+        return Decimal(str(avg_cost or 0))
+
+    async def _get_last_historical_unit_cost(self, product_id: int) -> Decimal | None:
+        result = await self.db.execute(
+            select(KardexEntry)
+            .where(
+                KardexEntry.product_id == product_id,
+                (KardexEntry.cost_in > 0) | (KardexEntry.cost_out > 0),
+            )
+            .order_by(KardexEntry.created_at.desc(), KardexEntry.id.desc())
+            .limit(1)
+        )
+        entry = result.scalar_one_or_none()
+        if not entry:
+            return None
+        if entry.cost_in and entry.cost_in > 0:
+            return Decimal(str(entry.cost_in))
+        if entry.cost_out and entry.cost_out > 0:
+            return Decimal(str(entry.cost_out))
+        return None
+
+    async def get_adjustment_increment_cost_preview(self, product_id: int) -> dict:
+        balance_qty, balance_val, avg_cost = await self.kardex._get_current_balance(
+            product_id
+        )
+        current_cost = Decimal(str(avg_cost or 0))
+        current_value = Decimal(str(balance_val or 0))
+        current_qty = Decimal(str(balance_qty or 0))
+
+        if current_qty > 0 and current_value > 0 and current_cost > 0:
+            return {"product_id": product_id, "mode": "auto", "unit_cost": current_cost}
+
+        historical_cost = await self._get_last_historical_unit_cost(product_id)
+        if historical_cost and historical_cost > 0:
+            return {
+                "product_id": product_id,
+                "mode": "suggested",
+                "unit_cost": historical_cost,
+            }
+
+        return {"product_id": product_id, "mode": "required_manual", "unit_cost": None}
+
+    async def list_adjustment_increment_cost_previews(self, product_ids: list[int]) -> list[dict]:
+        previews: list[dict] = []
+        seen: set[int] = set()
+        for product_id in product_ids:
+            if product_id in seen:
+                continue
+            seen.add(product_id)
+            previews.append(await self.get_adjustment_increment_cost_preview(product_id))
+        return previews
+
+    async def _resolve_increment_adjustment_unit_costs(self, lines_data: list) -> list[Decimal]:
+        costs: list[Decimal] = []
+        for line in lines_data:
+            preview = await self.get_adjustment_increment_cost_preview(line.product_id)
+            provided = Decimal(str(getattr(line, "unit_cost", 0) or 0))
+            if preview["mode"] == "auto":
+                costs.append(Decimal(str(preview["unit_cost"] or 0)))
+                continue
+            if preview["mode"] == "suggested":
+                costs.append(
+                    provided if provided > 0 else Decimal(str(preview["unit_cost"] or 0))
+                )
+                continue
+            if provided <= 0:
+                raise ValidationAppError(
+                    "UNIT_COST_REQUIRED",
+                    "Debe ingresar el costo unitario del inventario encontrado.",
+                )
+            costs.append(provided)
+        return costs
+
     async def create_ingreso(
         self,
         ingreso_type: str,
@@ -362,17 +488,32 @@ class InventoryService:
             notes=notes,
             created_by=actor_id,
         )
+        resolved_unit_costs = (
+            await self._resolve_increment_adjustment_unit_costs(lines_data)
+            if ingreso_type == "adjustment_positive"
+            else [Decimal(str(getattr(l, "unit_cost", 0) or 0)) for l in lines_data]
+        )
+        if ingreso_type == "adjustment_positive":
+            for idx, resolved_cost in enumerate(resolved_unit_costs):
+                rounded_cost = Decimal(str(resolved_cost)).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                if rounded_cost <= 0:
+                    raise ValidationAppError(
+                        "UNIT_COST_REQUIRED",
+                        f"Debe ingresar un costo unitario mayor a 0 para el producto {lines_data[idx].product_id}.",
+                    )
         lines = [
             InventoryDocumentLine(
                 product_id=l.product_id,
                 quantity=l.quantity,
-                unit_cost=l.unit_cost,
+                unit_cost=resolved_unit_costs[idx],
                 unit_price=l.unit_price,
                 unit_price_base=l.unit_price_base,
                 discount_type=l.discount_type,
                 discount_value=l.discount_value,
             )
-            for l in lines_data
+            for idx, l in enumerate(lines_data)
         ]
         doc = await self.repo.create_document(doc, lines)
 
@@ -402,6 +543,7 @@ class InventoryService:
         egreso_type: str,
         purchase_document_type: str,
         purchase_document_number: str | None,
+        seller_name: str | None,
         purchase_document_date: datetime | None,
         baja_reason: str | None,
         adjustment_reason: str | None,
@@ -422,6 +564,46 @@ class InventoryService:
         await self._validate_sufficient_stock(lines_data)
         await self._validate_enabled_egreso_type(egreso_type)
         self._validate_document_type_for_egreso(egreso_type, purchase_document_type)
+
+        normalized_seller_name = (seller_name or "").strip().upper()
+        if egreso_type == "sale":
+            if not normalized_seller_name:
+                raise ValidationAppError(
+                    "SELLER_REQUIRED",
+                    "Vendedor es obligatorio para ventas",
+                )
+
+            result = await self.db.execute(select(CompanyConfig).limit(1))
+            company = result.scalar_one_or_none()
+            allowed_sellers: list[str] = []
+            for item in (company.sellers if company else []):
+                value = str(item).strip().upper()
+                if value and value not in allowed_sellers:
+                    allowed_sellers.append(value)
+
+            if normalized_seller_name not in allowed_sellers:
+                raise ValidationAppError(
+                    "SELLER_NOT_ALLOWED",
+                    "El vendedor no está habilitado para la empresa",
+                )
+
+            seller_name = normalized_seller_name
+        else:
+            seller_name = None
+
+        normalized_purchase_document_number = (purchase_document_number or "").strip()
+        if egreso_type == "sale":
+            if purchase_document_type == "none":
+                purchase_document_number = "Venta sin documento"
+            elif not normalized_purchase_document_number:
+                raise ValidationAppError(
+                    "PURCHASE_DOCUMENT_NUMBER_REQUIRED",
+                    "Número de documento es obligatorio para ventas",
+                )
+            else:
+                purchase_document_number = normalized_purchase_document_number
+        else:
+            purchase_document_number = normalized_purchase_document_number or None
 
         if egreso_type == "baja":
             if not baja_reason:
@@ -462,6 +644,7 @@ class InventoryService:
             ingreso_type=egreso_type,
             purchase_document_type=purchase_document_type,
             purchase_document_number=purchase_document_number,
+            seller_name=seller_name,
             purchase_document_date=purchase_document_date,
             baja_reason=baja_reason,
             adjustment_reason=adjustment_reason,
@@ -562,6 +745,188 @@ class InventoryService:
         await self.db.commit()
         return await self.repo.get_by_id(doc.id)
 
+    async def create_count(
+        self,
+        description: str,
+        lines_data: list,
+        actor_id: int,
+        actor_name: str,
+        request=None,
+    ) -> InventoryCount:
+        lines = await self._build_count_lines(lines_data)
+        year = datetime.now(timezone.utc).year
+        number = await self.repo.generate_count_number(year)
+
+        count = InventoryCount(
+            number=number,
+            status="draft",
+            description=description.strip(),
+            created_by=actor_id,
+        )
+        count = await self.repo.create_count(count, lines)
+
+        await self.audit.log(
+            AuditAction.CREATE,
+            user_id=actor_id,
+            username=actor_name,
+            entity_type="inventory_count",
+            entity_id=count.id,
+            new={"number": number, "status": "draft"},
+            request=request,
+        )
+        await self.db.commit()
+        return await self.repo.get_count_by_id(count.id)
+
+    async def update_count(
+        self,
+        count_id: int,
+        description: str,
+        lines_data: list,
+        actor_id: int,
+        actor_name: str,
+        request=None,
+    ) -> InventoryCount:
+        count = await self._get_count_or_fail(count_id)
+        self._assert_count_editable(count)
+
+        count.description = description.strip()
+        count.lines = await self._build_count_lines(lines_data)
+        await self.db.flush()
+
+        await self.audit.log(
+            AuditAction.UPDATE,
+            user_id=actor_id,
+            username=actor_name,
+            entity_type="inventory_count",
+            entity_id=count.id,
+            new={"number": count.number, "status": count.status},
+            request=request,
+        )
+        await self.db.commit()
+        return await self.repo.get_count_by_id(count.id)
+
+    async def apply_count(
+        self,
+        count_id: int,
+        actor_id: int,
+        actor_name: str,
+        line_costs_data: list | None = None,
+        request=None,
+    ) -> InventoryCount:
+        count = await self._get_count_or_fail(count_id)
+        self._assert_count_editable(count)
+
+        provided_cost_by_product: dict[int, Decimal] = {
+            int(item.product_id): Decimal(str(item.unit_cost))
+            for item in (line_costs_data or [])
+        }
+
+        positive_lines_raw = []
+        negative_lines = []
+        for line in count.lines:
+            difference = Decimal(str(line.difference_quantity))
+            if difference > 0:
+                positive_lines_raw.append(
+                    SimpleNamespace(
+                        product_id=line.product_id,
+                        quantity=difference,
+                        unit_cost=provided_cost_by_product.get(
+                            line.product_id, Decimal("0")
+                        ),
+                        unit_price=Decimal("0"),
+                        unit_price_base=None,
+                        discount_type=None,
+                        discount_value=None,
+                    )
+                )
+            elif difference < 0:
+                negative_lines.append(
+                    SimpleNamespace(
+                        product_id=line.product_id,
+                        quantity=abs(difference),
+                        unit_cost=Decimal("0"),
+                        unit_price=Decimal("0"),
+                        unit_price_base=None,
+                        discount_type=None,
+                        discount_value=None,
+                    )
+                )
+
+        notes = f"Conteo {count.number}: {count.description}"
+        positive_doc = None
+        negative_doc = None
+
+        resolved_positive_costs = (
+            await self._resolve_increment_adjustment_unit_costs(positive_lines_raw)
+            if positive_lines_raw
+            else []
+        )
+        positive_lines = [
+            SimpleNamespace(
+                product_id=line.product_id,
+                quantity=line.quantity,
+                unit_cost=resolved_positive_costs[idx],
+                unit_price=line.unit_price,
+                unit_price_base=line.unit_price_base,
+                discount_type=line.discount_type,
+                discount_value=line.discount_value,
+            )
+            for idx, line in enumerate(positive_lines_raw)
+        ]
+
+        if positive_lines:
+            positive_doc = await self.create_ingreso(
+                "adjustment_positive",
+                None,
+                "adjustment_act",
+                None,
+                None,
+                count.number,
+                notes,
+                positive_lines,
+                actor_id,
+                actor_name,
+                request,
+            )
+        if negative_lines:
+            negative_doc = await self.create_egreso(
+                "adjustment_negative",
+                "adjustment_act",
+                None,
+                None,
+                None,
+                None,
+                "physical_count",
+                count.number,
+                notes,
+                negative_lines,
+                actor_id,
+                actor_name,
+                request,
+            )
+
+        count.status = "applied"
+        count.applied_at = datetime.now(timezone.utc)
+        count.positive_adjustment_document_id = positive_doc.id if positive_doc else None
+        count.negative_adjustment_document_id = negative_doc.id if negative_doc else None
+
+        await self.audit.log(
+            AuditAction.APPROVE,
+            user_id=actor_id,
+            username=actor_name,
+            entity_type="inventory_count",
+            entity_id=count.id,
+            new={
+                "number": count.number,
+                "status": count.status,
+                "positive_adjustment_document_id": count.positive_adjustment_document_id,
+                "negative_adjustment_document_id": count.negative_adjustment_document_id,
+            },
+            request=request,
+        )
+        await self.db.commit()
+        return await self.repo.get_count_by_id(count.id)
+
     async def create_ajuste(
         self,
         adjust_type: AdjustType,
@@ -581,6 +946,13 @@ class InventoryService:
         await self._validate_quantity_mode(lines_data)
         if adjust_type == AdjustType.decrement:
             await self._validate_sufficient_stock(lines_data)
+            resolved_unit_costs = [
+                Decimal(str(getattr(l, "unit_cost", 0) or 0)) for l in lines_data
+            ]
+        else:
+            resolved_unit_costs = await self._resolve_increment_adjustment_unit_costs(
+                lines_data
+            )
 
         year = datetime.now(timezone.utc).year
         number = await self.repo.generate_document_number(DocumentType.AI, year)
@@ -598,10 +970,10 @@ class InventoryService:
             InventoryDocumentLine(
                 product_id=l.product_id,
                 quantity=l.quantity,
-                unit_cost=l.unit_cost,
+                unit_cost=resolved_unit_costs[idx],
                 unit_price=l.unit_price,
             )
-            for l in lines_data
+            for idx, l in enumerate(lines_data)
         ]
         doc = await self.repo.create_document(doc, lines)
 

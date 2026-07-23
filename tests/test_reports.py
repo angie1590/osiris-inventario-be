@@ -53,12 +53,15 @@ async def _seed_ingreso(client, admin_token, operator_token):
 
 async def _seed_egreso(client, admin_token, operator_token, egreso_type="sale"):
     prod_id = await _seed_ingreso(client, admin_token, operator_token)
+    payload = {
+        "egreso_type": egreso_type,
+        "lines": [{"product_id": prod_id, "quantity": "1", "unit_price": "3.00"}],
+    }
+    if egreso_type == "sale":
+        payload["seller_name"] = "VENDEDOR TEST"
     await client.post(
         "/api/v1/inventory/egresos",
-        json={
-            "egreso_type": egreso_type,
-            "lines": [{"product_id": prod_id, "quantity": "1", "unit_price": "3.00"}],
-        },
+        json=payload,
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     return prod_id
@@ -324,6 +327,7 @@ async def test_report_stock_valorizado_matches_kardex_balance_value_weighted_ave
     await client.post(
         "/api/v1/inventory/egresos",
         json={
+            "seller_name": "VENDEDOR TEST",
             "lines": [{"product_id": prod_id, "quantity": "5", "unit_price": "30.00"}]
         },
         headers={"Authorization": f"Bearer {operator_token}"},

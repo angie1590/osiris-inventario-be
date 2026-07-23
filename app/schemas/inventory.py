@@ -57,6 +57,8 @@ AdjustmentReason = Literal[
 ]
 
 DiscountType = Literal["percent", "fixed"]
+CountStatus = Literal["draft", "applied", "cancelled"]
+AdjustmentIncrementCostMode = Literal["auto", "suggested", "required_manual"]
 
 
 def _is_valid_ecuador_ruc(value: str) -> bool:
@@ -195,12 +197,21 @@ class EgresoCreate(BaseModel):
     egreso_type: EgresoType = "sale"
     purchase_document_type: PurchaseDocumentType = "sales_note"
     purchase_document_number: str | None = Field(None, max_length=100)
+    seller_name: str | None = Field(None, max_length=200)
     purchase_document_date: datetime | None = None
     baja_reason: BajaReason | None = None
     adjustment_reason: AdjustmentReason | None = None
     reference: str | None = Field(None, max_length=200)
     notes: str | None = Field(None, max_length=2000)
     lines: list[DocumentLineCreate] = Field(..., min_length=1)
+
+    @field_validator("seller_name", mode="before")
+    @classmethod
+    def _normalize_seller_name(cls, value):
+        if value is None:
+            return None
+        text = str(value).strip().upper()
+        return text or None
 
     @field_validator("purchase_document_date", mode="before")
     @classmethod
@@ -258,6 +269,36 @@ class AjusteCreate(BaseModel):
     reference: str | None = Field(None, max_length=200)
     notes: str | None = None
     lines: list[DocumentLineCreate] = Field(..., min_length=1)
+
+
+class CountLineCreate(BaseModel):
+    product_id: int
+    physical_quantity: Decimal = Field(..., gt=0)
+
+
+class InventoryCountCreate(BaseModel):
+    description: str = Field(..., min_length=1, max_length=2000)
+    lines: list[CountLineCreate] = Field(..., min_length=1)
+
+
+class InventoryCountUpdate(BaseModel):
+    description: str = Field(..., min_length=1, max_length=2000)
+    lines: list[CountLineCreate] = Field(..., min_length=1)
+
+
+class CountApplyLineCost(BaseModel):
+    product_id: int
+    unit_cost: Decimal = Field(..., gt=0)
+
+
+class InventoryCountApply(BaseModel):
+    line_costs: list[CountApplyLineCost] = Field(default_factory=list)
+
+
+class AdjustmentIncrementCostPreview(BaseModel):
+    product_id: int
+    mode: AdjustmentIncrementCostMode
+    unit_cost: Decimal | None = None
 
 
 class AuthCodeRequest(BaseModel):
@@ -425,6 +466,7 @@ class DocumentResponse(BaseModel):
     supplier_id: int | None
     purchase_document_type: PurchaseDocumentType | None
     purchase_document_number: str | None
+    seller_name: str | None
     purchase_document_date: datetime | None
     reference: str | None
     notes: str | None
@@ -437,5 +479,37 @@ class DocumentResponse(BaseModel):
     supplier: SupplierResponse | None = None
     attachments: list[DocumentAttachmentResponse] = []
     lines: list[DocumentLineResponse] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InventoryCountLineResponse(BaseModel):
+    id: int
+    product_id: int
+    product_name: str
+    product_isbn: str | None = None
+    product_codigo_interno: str | None = None
+    system_quantity: Decimal
+    physical_quantity: Decimal
+    difference_quantity: Decimal
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InventoryCountResponse(BaseModel):
+    id: int
+    number: str
+    status: CountStatus
+    description: str
+    created_by: int
+    positive_adjustment_document_id: int | None = None
+    negative_adjustment_document_id: int | None = None
+    positive_adjustment_document_number: str | None = None
+    negative_adjustment_document_number: str | None = None
+    applied_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    lines: list[InventoryCountLineResponse]
 
     model_config = ConfigDict(from_attributes=True)

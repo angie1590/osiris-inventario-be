@@ -56,6 +56,11 @@ INITIAL_PARAMS = [
         "false",
         "Hace obligatorio el codigo de barras al crear/editar productos",
     ),
+    (
+        "seller_commission_percent",
+        "0",
+        "Porcentaje de comision para vendedores (0-100)",
+    ),
 ]
 
 

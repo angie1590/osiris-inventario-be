@@ -65,6 +65,17 @@ DEFAULT_BAJA_REASONS = [
 ]
 
 
+def _normalize_sellers(values: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    for item in values or []:
+        value = str(item).strip().upper()
+        if not value:
+            continue
+        if value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
 def _only_digits(value: str) -> str:
     return re.sub(r"\D", "", value)
 
@@ -151,6 +162,7 @@ class CompanyConfigCreate(BaseModel):
     enabled_baja_reasons: list[str] = Field(
         default_factory=lambda: DEFAULT_BAJA_REASONS.copy()
     )
+    sellers: list[str] = Field(default_factory=list)
 
     @field_validator(
         "razon_social", "nombre_comercial", "direccion", "email", mode="before"
@@ -238,6 +250,18 @@ class CompanyConfigCreate(BaseModel):
             raise ValueError("Motivo de baja inválido")
         return list(dict.fromkeys(v))
 
+    @field_validator("sellers", mode="before")
+    @classmethod
+    def normalize_sellers(cls, v: list[str] | None) -> list[str]:
+        return _normalize_sellers(v)
+
+    @field_validator("sellers")
+    @classmethod
+    def validate_sellers(cls, v: list[str]) -> list[str]:
+        if any(len(item) > 200 for item in v):
+            raise ValueError("Cada vendedor debe tener máximo 200 caracteres")
+        return v
+
 
 class CompanyConfigUpdate(BaseModel):
     razon_social: str | None = None
@@ -250,6 +274,7 @@ class CompanyConfigUpdate(BaseModel):
     enabled_ingreso_types: list[str] | None = None
     enabled_egreso_types: list[str] | None = None
     enabled_baja_reasons: list[str] | None = None
+    sellers: list[str] | None = None
 
     @field_validator(
         "razon_social", "nombre_comercial", "direccion", "email", mode="before"
@@ -353,6 +378,22 @@ class CompanyConfigUpdate(BaseModel):
             raise ValueError("Motivo de baja inválido")
         return list(dict.fromkeys(v))
 
+    @field_validator("sellers", mode="before")
+    @classmethod
+    def normalize_sellers_update(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        return _normalize_sellers(v)
+
+    @field_validator("sellers")
+    @classmethod
+    def validate_sellers_update(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if any(len(item) > 200 for item in v):
+            raise ValueError("Cada vendedor debe tener máximo 200 caracteres")
+        return v
+
 
 class CompanyConfigResponse(BaseModel):
     id: int
@@ -366,6 +407,7 @@ class CompanyConfigResponse(BaseModel):
     enabled_ingreso_types: list[str]
     enabled_egreso_types: list[str]
     enabled_baja_reasons: list[str]
+    sellers: list[str]
     is_complete: bool
     created_at: datetime
     updated_at: datetime

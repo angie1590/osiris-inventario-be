@@ -7,7 +7,10 @@ from app.models.product import Product  # noqa: F401
 from app.models.system_param import SystemParam  # noqa: F401
 from app.models.inventory import (  # noqa: F401
 	AuthorizationCode,
+	CountSequence,
 	DocumentSequence,
+	InventoryCount,
+	InventoryCountLine,
 	InventoryDocument,
 	InventoryDocumentAttachment,
 	InventoryDocumentLine,

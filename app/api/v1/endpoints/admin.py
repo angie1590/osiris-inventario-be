@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import re
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict
@@ -18,11 +19,14 @@ router = APIRouter()
 
 _admin_only = require_role(UserRole.admin)
 _hidden_params = {"doc_number_prefix"}
-_numeric_params = {
+_integer_params = {
     "session_timeout_minutes",
     "max_export_date_range_days",
     "auth_code_expire_minutes",
     "doc_number_padding",
+}
+_percentage_params = {
+    "seller_commission_percent",
 }
 
 
@@ -75,10 +79,22 @@ async def update_param(
             "EMPTY_PARAM_VALUE", f"Parameter '{key}' cannot be empty"
         )
 
-    if key in _numeric_params:
+    if key in _integer_params:
         if not normalized_value.isdigit():
             raise ValidationAppError(
                 "INVALID_PARAM_VALUE", f"Parameter '{key}' must be an integer"
+            )
+
+    if key in _percentage_params:
+        if not re.fullmatch(r"\d+(?:\.\d{1,2})?", normalized_value):
+            raise ValidationAppError(
+                "INVALID_PARAM_VALUE",
+                f"Parameter '{key}' must be a number between 0 and 100 with up to 2 decimals",
+            )
+        if float(normalized_value) > 100:
+            raise ValidationAppError(
+                "INVALID_PARAM_VALUE",
+                f"Parameter '{key}' must be less than or equal to 100",
             )
 
     # Special validation for kardex_method change

@@ -230,6 +230,7 @@ async def company_config(db_session: AsyncSession):
         direccion="Av. Ejemplo 123",
         telefono="0991234567",
         email="empresa@test.com",
+        sellers=["VENDEDOR TEST"],
     )
     db_session.add(company)
     await db_session.commit()

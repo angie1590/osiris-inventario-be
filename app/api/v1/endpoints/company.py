@@ -38,6 +38,7 @@ def _to_response(company: CompanyConfig) -> CompanyConfigResponse:
     enabled_ingreso_types = company.enabled_ingreso_types or DEFAULT_INGRESO_TYPES
     enabled_egreso_types = _normalize_egreso_types(company.enabled_egreso_types)
     enabled_baja_reasons = company.enabled_baja_reasons or DEFAULT_BAJA_REASONS
+    sellers = company.sellers or []
     return CompanyConfigResponse(
         id=company.id,
         razon_social=company.razon_social,
@@ -50,6 +51,7 @@ def _to_response(company: CompanyConfig) -> CompanyConfigResponse:
         enabled_ingreso_types=enabled_ingreso_types,
         enabled_egreso_types=enabled_egreso_types,
         enabled_baja_reasons=enabled_baja_reasons,
+        sellers=sellers,
         is_complete=_is_complete(company),
         created_at=company.created_at,
         updated_at=company.updated_at,
