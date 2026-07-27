@@ -31,7 +31,7 @@ class ChangePasswordRequest(BaseModel):
 
 
 class ApprovalCodeRequest(BaseModel):
-    approval_code: str = Field(..., min_length=8, max_length=8)
+    approval_code: str = Field(..., min_length=4, max_length=4)
 
 
 class ProfileUpdateRequest(BaseModel):

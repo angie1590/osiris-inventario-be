@@ -59,6 +59,7 @@ AdjustmentReason = Literal[
 DiscountType = Literal["percent", "fixed"]
 CountStatus = Literal["draft", "applied", "cancelled"]
 AdjustmentIncrementCostMode = Literal["auto", "suggested", "required_manual"]
+ReturnCondition = Literal["available", "damaged", "requires_review"]
 
 
 def _is_valid_ecuador_ruc(value: str) -> bool:
@@ -306,12 +307,47 @@ class AuthCodeRequest(BaseModel):
 
 
 class ApproveRequest(BaseModel):
-    authorization_code: str = Field(..., min_length=8, max_length=8)
+    authorization_code: str = Field(..., min_length=4, max_length=4)
 
 
 class VoidRequest(BaseModel):
     # Required only when an operator voids; admin/supervisor void without a PIN.
     authorizer_pin: str | None = None
+
+
+class ExchangeReturnedLine(BaseModel):
+    product_id: int
+    quantity: Decimal = Field(..., gt=0)
+    return_condition: ReturnCondition
+
+
+class ExchangeNewLine(BaseModel):
+    product_id: int
+    quantity: Decimal = Field(..., gt=0)
+    unit_price: Decimal | None = Field(default=None, ge=0)
+    unit_price_base: Decimal | None = Field(default=None, ge=0)
+    discount_type: DiscountType | None = None
+    discount_value: Decimal | None = Field(default=None, ge=0)
+
+
+class SaleExchangeCreate(BaseModel):
+    returned_lines: list[ExchangeReturnedLine] = Field(..., min_length=1)
+    new_lines: list[ExchangeNewLine] = Field(..., min_length=1)
+    purchase_document_type: PurchaseDocumentType | None = None
+    purchase_document_number: str | None = Field(None, max_length=100)
+    purchase_document_date: datetime | None = None
+    reference: str | None = Field(None, max_length=200)
+    notes: str | None = Field(None, max_length=2000)
+    authorizer_pin: str | None = None
+
+
+class SaleExchangeResponse(BaseModel):
+    original_document: "DocumentResponse"
+    return_document: "DocumentResponse"
+    new_document: "DocumentResponse"
+    return_total: Decimal
+    new_total: Decimal
+    difference_total: Decimal
 
 
 class DocumentLineResponse(BaseModel):
@@ -325,6 +361,9 @@ class DocumentLineResponse(BaseModel):
     unit_price_base: Decimal | None = None
     discount_type: DiscountType | None = None
     discount_value: Decimal | None = None
+    return_condition: ReturnCondition | None = None
+    return_reason: str | None = None
+    return_notes: str | None = None
     lot_id: int | None
 
     model_config = ConfigDict(from_attributes=True)
@@ -470,6 +509,12 @@ class DocumentResponse(BaseModel):
     purchase_document_date: datetime | None
     reference: str | None
     notes: str | None
+    exchange_original_document_id: int | None = None
+    exchange_original_document_number: str | None = None
+    exchange_return_document_id: int | None = None
+    exchange_return_document_number: str | None = None
+    exchange_new_sale_document_id: int | None = None
+    exchange_new_sale_document_number: str | None = None
     adjust_type: AdjustType | None
     created_by: int
     authorized_by: int | None
@@ -513,3 +558,6 @@ class InventoryCountResponse(BaseModel):
     lines: list[InventoryCountLineResponse]
 
     model_config = ConfigDict(from_attributes=True)
+
+
+SaleExchangeResponse.model_rebuild()

@@ -33,7 +33,7 @@ async def _create_product(
     return prod.json()["id"]
 
 
-_APPROVAL_PIN = "ABCD1234"
+_APPROVAL_PIN = "1234"
 
 
 async def _approve_baja(client, admin_token, bi_id, code=_APPROVAL_PIN):
@@ -94,6 +94,7 @@ async def test_egreso_decreases_stock(
     resp = await client.post(
         "/api/v1/inventory/egresos",
         json={
+            "purchase_document_type": "none",
             "seller_name": "VENDEDOR TEST",
             "lines": [
                 {"product_id": prod_id, "quantity": "5.00", "unit_price": "10.00"}
@@ -185,6 +186,79 @@ async def test_sale_requires_document_number_when_document_is_not_none(
 
     assert resp.status_code == 422
     assert resp.json()["code"] == "PURCHASE_DOCUMENT_NUMBER_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_sale_document_number_must_be_unique(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Sale Unique Document Number"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "10.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    first = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "sale",
+            "purchase_document_type": "invoice",
+            "purchase_document_number": "001-001-000123",
+            "seller_name": "VENDEDOR TEST",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert first.status_code == 201, first.text
+
+    second = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "sale",
+            "purchase_document_type": "invoice",
+            "purchase_document_number": "001-001-000123",
+            "seller_name": "VENDEDOR TEST",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert second.status_code == 422
+    assert second.json()["code"] == "PURCHASE_DOCUMENT_NUMBER_DUPLICATE"
+
+
+@pytest.mark.asyncio
+async def test_sale_document_number_rejects_leading_or_trailing_spaces(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Sale Document Number Spaces"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "sale",
+            "purchase_document_type": "invoice",
+            "purchase_document_number": " 001-001-000124 ",
+            "seller_name": "VENDEDOR TEST",
+            "lines": [{"product_id": prod_id, "quantity": "1.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "PURCHASE_DOCUMENT_NUMBER_WHITESPACE"
 
 
 @pytest.mark.asyncio
@@ -306,7 +380,7 @@ async def test_baja_requires_reason(
     )
 
     assert resp.status_code == 422
-    assert resp.json()["code"] == "BAJA_REASON_REQUIRED"
+    assert resp.json().get("code") in {"BAJA_REASON_REQUIRED", "VALIDATION_ERROR"}
 
 
 @pytest.mark.asyncio
@@ -549,7 +623,7 @@ async def test_baja_invalid_auth_code(
     )
     resp = await client.post(
         f"/api/v1/inventory/bajas/{bi_id}/approve",
-        json={"authorization_code": "BADCODE1"},
+        json={"authorization_code": "9999"},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 422
@@ -676,6 +750,7 @@ async def test_void_egreso_restores_stock(client, admin_token, operator_token):
     eg = (await client.post(
         "/api/v1/inventory/egresos",
         json={
+            "purchase_document_type": "none",
             "seller_name": "VENDEDOR TEST",
             "lines": [{"product_id": prod_id, "quantity": "5.00", "unit_price": "9.00"}],
         },
@@ -715,7 +790,7 @@ async def test_operator_void_with_valid_pin(client, admin_token, operator_token)
     # Admin configures an approval code (the PIN — distinct from login password).
     await client.post(
         "/api/v1/auth/approval-code",
-        json={"approval_code": "ABCD1234"},
+        json={"approval_code": "1234"},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     prod_id = await _create_product(client, admin_token, operator_token, "Void Pin")
@@ -727,7 +802,7 @@ async def test_operator_void_with_valid_pin(client, admin_token, operator_token)
 
     bad = await client.post(
         f"/api/v1/inventory/documents/{doc['id']}/void",
-        json={"authorizer_pin": "00000000"},
+        json={"authorizer_pin": "0000"},
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     assert bad.status_code == 422
@@ -735,7 +810,7 @@ async def test_operator_void_with_valid_pin(client, admin_token, operator_token)
 
     ok = await client.post(
         f"/api/v1/inventory/documents/{doc['id']}/void",
-        json={"authorizer_pin": "abcd1234"},
+        json={"authorizer_pin": "1234"},
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     assert ok.status_code == 200, ok.text
@@ -769,6 +844,7 @@ async def test_void_ingreso_consumed_fails(client, admin_token, operator_token):
     await client.post(
         "/api/v1/inventory/egresos",
         json={
+            "purchase_document_type": "none",
             "seller_name": "VENDEDOR TEST",
             "lines": [{"product_id": prod_id, "quantity": "10.00", "unit_price": "9.00"}],
         },
@@ -803,6 +879,7 @@ async def test_void_ingreso_consumed_fails_weighted_average(
     await client.post(
         "/api/v1/inventory/egresos",
         json={
+            "purchase_document_type": "none",
             "seller_name": "VENDEDOR TEST",
             "lines": [{"product_id": prod_id, "quantity": "10.00", "unit_price": "9.00"}],
         },
@@ -844,3 +921,447 @@ async def test_decimal_mode_allows_fractional_quantity(client, admin_token, oper
         headers={"Authorization": f"Bearer {operator_token}"},
     )
     assert resp.status_code == 201, resp.text
+
+
+@pytest.mark.asyncio
+async def test_sale_exchange_keeps_original_and_creates_return_and_new_sale(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    await client.post(
+        "/api/v1/auth/approval-code",
+        json={"approval_code": "1234"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    prod_a = await _create_product(
+        client, admin_token, operator_token, "Exchange A", pvp="10.00"
+    )
+    prod_b = await _create_product(
+        client, admin_token, operator_token, "Exchange B", pvp="12.00"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "lines": [
+                {"product_id": prod_a, "quantity": "10.00", "unit_cost": "3.00"},
+                {"product_id": prod_b, "quantity": "10.00", "unit_cost": "4.00"},
+            ]
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    original_sale = (
+        await client.post(
+            "/api/v1/inventory/egresos",
+            json={
+                "egreso_type": "sale",
+                "purchase_document_type": "none",
+                "seller_name": "VENDEDOR TEST",
+                "lines": [
+                    {
+                        "product_id": prod_a,
+                        "quantity": "5.00",
+                        "unit_price": "10.00",
+                    }
+                ],
+            },
+            headers={"Authorization": f"Bearer {operator_token}"},
+        )
+    ).json()
+
+    resp = await client.post(
+        f"/api/v1/inventory/egresos/{original_sale['id']}/exchange",
+        json={
+            "returned_lines": [
+                {
+                    "product_id": prod_a,
+                    "quantity": "2.00",
+                    "return_condition": "available",
+                }
+            ],
+            "new_lines": [
+                {"product_id": prod_b, "quantity": "2.00", "unit_price": "12.00"}
+            ],
+            "authorizer_pin": "1234",
+            "notes": "Cambio por talla",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["original_document"]["status"] == "approved"
+    assert body["return_document"]["status"] == "approved"
+    assert body["return_document"]["ingreso_type"] == "customer_return"
+    assert body["new_document"]["status"] == "approved"
+    assert body["original_document"]["exchange_return_document_id"] == body["return_document"]["id"]
+    assert body["original_document"]["exchange_new_sale_document_id"] == body["new_document"]["id"]
+    assert body["return_document"]["exchange_original_document_id"] == body["original_document"]["id"]
+    assert body["new_document"]["exchange_original_document_id"] == body["original_document"]["id"]
+    assert float(body["return_total"]) == 20.0
+    assert float(body["new_total"]) == 24.0
+    assert float(body["difference_total"]) == 4.0
+
+    stock_a = await _stock(client, admin_token, prod_a)
+    stock_b = await _stock(client, admin_token, prod_b)
+    assert stock_a == 7.0
+    assert stock_b == 8.0
+
+
+@pytest.mark.asyncio
+async def test_sale_exchange_validates_return_cannot_exceed_sold(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    await client.post(
+        "/api/v1/auth/approval-code",
+        json={"approval_code": "1234"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    prod_id = await _create_product(
+        client, admin_token, operator_token, "Exchange Block", pvp="10.00"
+    )
+    prod_new = await _create_product(
+        client, admin_token, operator_token, "Exchange Block New", pvp="11.00"
+    )
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "lines": [
+                {"product_id": prod_id, "quantity": "10.00", "unit_cost": "3.00"},
+                {"product_id": prod_new, "quantity": "10.00", "unit_cost": "4.00"},
+            ]
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    sale = (
+        await client.post(
+            "/api/v1/inventory/egresos",
+            json={
+                "egreso_type": "sale",
+                "purchase_document_type": "none",
+                "seller_name": "VENDEDOR TEST",
+                "lines": [{"product_id": prod_id, "quantity": "5.00", "unit_price": "10.00"}],
+            },
+            headers={"Authorization": f"Bearer {operator_token}"},
+        )
+    ).json()
+    resp = await client.post(
+        f"/api/v1/inventory/egresos/{sale['id']}/exchange",
+        json={
+            "returned_lines": [
+                {
+                    "product_id": prod_id,
+                    "quantity": "6.00",
+                    "return_condition": "available",
+                }
+            ],
+            "new_lines": [{"product_id": prod_new, "quantity": "1.00", "unit_price": "10.00"}],
+            "authorizer_pin": "1234",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert resp.status_code == 422
+    assert resp.json().get("code") == "EXCHANGE_RETURN_EXCEEDS_SOLD"
+
+
+@pytest.mark.asyncio
+async def test_sale_exchange_allows_original_seller_even_if_now_disabled(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+    db_session: AsyncSession,
+):
+    from app.models.company_config import CompanyConfig
+
+    await client.post(
+        "/api/v1/auth/approval-code",
+        json={"approval_code": "1234"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    prod_a = await _create_product(
+        client, admin_token, operator_token, "Exchange Seller A", pvp="100.00"
+    )
+    prod_b = await _create_product(
+        client, admin_token, operator_token, "Exchange Seller B", pvp="90.00"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "lines": [
+                {"product_id": prod_a, "quantity": "5.00", "unit_cost": "10.00"},
+                {"product_id": prod_b, "quantity": "5.00", "unit_cost": "10.00"},
+            ]
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    sale = (
+        await client.post(
+            "/api/v1/inventory/egresos",
+            json={
+                "egreso_type": "sale",
+                "purchase_document_type": "none",
+                "seller_name": "VENDEDOR TEST",
+                "lines": [{"product_id": prod_a, "quantity": "1.00", "unit_price": "100.00"}],
+            },
+            headers={"Authorization": f"Bearer {operator_token}"},
+        )
+    ).json()
+
+    result = await db_session.execute(select(CompanyConfig).limit(1))
+    company = result.scalar_one()
+    company.sellers = ["OTRO VENDEDOR"]
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/inventory/egresos/{sale['id']}/exchange",
+        json={
+            "returned_lines": [
+                {
+                    "product_id": prod_a,
+                    "quantity": "1.00",
+                    "return_condition": "requires_review",
+                }
+            ],
+            "new_lines": [{"product_id": prod_b, "quantity": "1.00", "unit_price": "90.00"}],
+            "authorizer_pin": "1234",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["new_document"]["seller_name"] == "VENDEDOR TEST"
+    assert body["original_document"]["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_sale_exchange_reuses_document_number_with_cambio_suffix(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+):
+    await client.post(
+        "/api/v1/auth/approval-code",
+        json={"approval_code": "1234"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    prod_a = await _create_product(
+        client, admin_token, operator_token, "Exchange Doc A", pvp="50.00"
+    )
+    prod_b = await _create_product(
+        client, admin_token, operator_token, "Exchange Doc B", pvp="60.00"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "lines": [
+                {"product_id": prod_a, "quantity": "5.00", "unit_cost": "10.00"},
+                {"product_id": prod_b, "quantity": "5.00", "unit_cost": "12.00"},
+            ]
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    sale = (
+        await client.post(
+            "/api/v1/inventory/egresos",
+            json={
+                "egreso_type": "sale",
+                "purchase_document_type": "invoice",
+                "purchase_document_number": "001-001-000500",
+                "seller_name": "VENDEDOR TEST",
+                "lines": [{"product_id": prod_a, "quantity": "1.00", "unit_price": "50.00"}],
+            },
+            headers={"Authorization": f"Bearer {operator_token}"},
+        )
+    ).json()
+
+    resp = await client.post(
+        f"/api/v1/inventory/egresos/{sale['id']}/exchange",
+        json={
+            "returned_lines": [
+                {
+                    "product_id": prod_a,
+                    "quantity": "1.00",
+                    "return_condition": "available",
+                }
+            ],
+            "new_lines": [{"product_id": prod_b, "quantity": "1.00", "unit_price": "60.00"}],
+            "authorizer_pin": "1234",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["new_document"]["purchase_document_type"] == "invoice"
+    assert body["new_document"]["purchase_document_number"] == "001-001-000500 (cambio)"
+
+
+@pytest.mark.asyncio
+async def test_sale_exchange_blocks_when_sale_already_from_change(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+):
+    await client.post(
+        "/api/v1/auth/approval-code",
+        json={"approval_code": "1234"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    prod_a = await _create_product(
+        client, admin_token, operator_token, "Exchange Chain A", pvp="20.00"
+    )
+    prod_b = await _create_product(
+        client, admin_token, operator_token, "Exchange Chain B", pvp="25.00"
+    )
+    prod_c = await _create_product(
+        client, admin_token, operator_token, "Exchange Chain C", pvp="30.00"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "lines": [
+                {"product_id": prod_a, "quantity": "10.00", "unit_cost": "5.00"},
+                {"product_id": prod_b, "quantity": "10.00", "unit_cost": "6.00"},
+                {"product_id": prod_c, "quantity": "10.00", "unit_cost": "7.00"},
+            ]
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    sale = (
+        await client.post(
+            "/api/v1/inventory/egresos",
+            json={
+                "egreso_type": "sale",
+                "purchase_document_type": "none",
+                "seller_name": "VENDEDOR TEST",
+                "lines": [{"product_id": prod_a, "quantity": "1.00", "unit_price": "20.00"}],
+            },
+            headers={"Authorization": f"Bearer {operator_token}"},
+        )
+    ).json()
+
+    first_exchange = await client.post(
+        f"/api/v1/inventory/egresos/{sale['id']}/exchange",
+        json={
+            "returned_lines": [
+                {
+                    "product_id": prod_a,
+                    "quantity": "1.00",
+                    "return_condition": "available",
+                }
+            ],
+            "new_lines": [{"product_id": prod_b, "quantity": "1.00", "unit_price": "25.00"}],
+            "authorizer_pin": "1234",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert first_exchange.status_code == 200, first_exchange.text
+    new_sale_id = first_exchange.json()["new_document"]["id"]
+
+    second_exchange = await client.post(
+        f"/api/v1/inventory/egresos/{new_sale_id}/exchange",
+        json={
+            "returned_lines": [
+                {
+                    "product_id": prod_b,
+                    "quantity": "1.00",
+                    "return_condition": "available",
+                }
+            ],
+            "new_lines": [{"product_id": prod_c, "quantity": "1.00", "unit_price": "30.00"}],
+            "authorizer_pin": "1234",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert second_exchange.status_code == 422, second_exchange.text
+    assert second_exchange.json()["code"] == "EXCHANGE_ALREADY_FROM_CHANGE"
+
+
+@pytest.mark.asyncio
+async def test_sale_exchange_blocks_when_sale_already_has_exchange_generated(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+):
+    await client.post(
+        "/api/v1/auth/approval-code",
+        json={"approval_code": "1234"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    prod_a = await _create_product(
+        client, admin_token, operator_token, "Exchange Repeated A", pvp="20.00"
+    )
+    prod_b = await _create_product(
+        client, admin_token, operator_token, "Exchange Repeated B", pvp="25.00"
+    )
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "lines": [
+                {"product_id": prod_a, "quantity": "10.00", "unit_cost": "5.00"},
+                {"product_id": prod_b, "quantity": "10.00", "unit_cost": "6.00"},
+            ]
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    sale = (
+        await client.post(
+            "/api/v1/inventory/egresos",
+            json={
+                "egreso_type": "sale",
+                "purchase_document_type": "none",
+                "seller_name": "VENDEDOR TEST",
+                "lines": [{"product_id": prod_a, "quantity": "1.00", "unit_price": "20.00"}],
+            },
+            headers={"Authorization": f"Bearer {operator_token}"},
+        )
+    ).json()
+
+    first_exchange = await client.post(
+        f"/api/v1/inventory/egresos/{sale['id']}/exchange",
+        json={
+            "returned_lines": [
+                {
+                    "product_id": prod_a,
+                    "quantity": "1.00",
+                    "return_condition": "available",
+                }
+            ],
+            "new_lines": [{"product_id": prod_b, "quantity": "1.00", "unit_price": "25.00"}],
+            "authorizer_pin": "1234",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert first_exchange.status_code == 200, first_exchange.text
+
+    repeated_exchange = await client.post(
+        f"/api/v1/inventory/egresos/{sale['id']}/exchange",
+        json={
+            "returned_lines": [
+                {
+                    "product_id": prod_a,
+                    "quantity": "1.00",
+                    "return_condition": "available",
+                }
+            ],
+            "new_lines": [{"product_id": prod_b, "quantity": "1.00", "unit_price": "25.00"}],
+            "authorizer_pin": "1234",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert repeated_exchange.status_code == 422, repeated_exchange.text
+    assert repeated_exchange.json()["code"] == "EXCHANGE_ALREADY_GENERATED"

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from types import SimpleNamespace
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -229,6 +229,34 @@ class InventoryService:
                 "BAJA_REASON_DISABLED",
                 "El motivo de la baja no está habilitado para la empresa",
             )
+
+    async def _sale_document_number_exists(self, document_number: str) -> bool:
+        result = await self.db.execute(
+            select(InventoryDocument.id)
+            .where(
+                InventoryDocument.doc_type == DocumentType.EG,
+                InventoryDocument.ingreso_type == "sale",
+                func.upper(InventoryDocument.purchase_document_number)
+                == document_number.upper(),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def _build_exchange_document_number(self, original_number: str | None) -> str | None:
+        base = (original_number or "").strip()
+        if not base:
+            return None
+        if not await self._sale_document_number_exists(base):
+            return base
+
+        suffix_base = f"{base} (cambio)"
+        candidate = suffix_base
+        index = 2
+        while await self._sale_document_number_exists(candidate):
+            candidate = f"{suffix_base} {index}"
+            index += 1
+        return candidate
 
     def _validate_adjustment_reason(self, adjustment_reason: str) -> None:
         if adjustment_reason not in DEFAULT_ADJUSTMENT_REASONS:
@@ -553,6 +581,8 @@ class InventoryService:
         actor_id: int,
         actor_name: str,
         request=None,
+        commit: bool = True,
+        validate_seller_enabled: bool = True,
     ) -> InventoryDocument:
         if not lines_data:
             raise ValidationAppError(
@@ -573,19 +603,20 @@ class InventoryService:
                     "Vendedor es obligatorio para ventas",
                 )
 
-            result = await self.db.execute(select(CompanyConfig).limit(1))
-            company = result.scalar_one_or_none()
-            allowed_sellers: list[str] = []
-            for item in (company.sellers if company else []):
-                value = str(item).strip().upper()
-                if value and value not in allowed_sellers:
-                    allowed_sellers.append(value)
+            if validate_seller_enabled:
+                result = await self.db.execute(select(CompanyConfig).limit(1))
+                company = result.scalar_one_or_none()
+                allowed_sellers: list[str] = []
+                for item in (company.sellers if company else []):
+                    value = str(item).strip().upper()
+                    if value and value not in allowed_sellers:
+                        allowed_sellers.append(value)
 
-            if normalized_seller_name not in allowed_sellers:
-                raise ValidationAppError(
-                    "SELLER_NOT_ALLOWED",
-                    "El vendedor no está habilitado para la empresa",
-                )
+                if normalized_seller_name not in allowed_sellers:
+                    raise ValidationAppError(
+                        "SELLER_NOT_ALLOWED",
+                        "El vendedor no está habilitado para la empresa",
+                    )
 
             seller_name = normalized_seller_name
         else:
@@ -601,6 +632,21 @@ class InventoryService:
                     "Número de documento es obligatorio para ventas",
                 )
             else:
+                raw_purchase_document_number = str(purchase_document_number or "")
+                if raw_purchase_document_number != normalized_purchase_document_number:
+                    raise ValidationAppError(
+                        "PURCHASE_DOCUMENT_NUMBER_WHITESPACE",
+                        "Número de documento no debe tener espacios al inicio o al final",
+                    )
+
+                if await self._sale_document_number_exists(
+                    normalized_purchase_document_number
+                ):
+                    raise ValidationAppError(
+                        "PURCHASE_DOCUMENT_NUMBER_DUPLICATE",
+                        "Número de documento ya registrado en otra venta",
+                    )
+
                 purchase_document_number = normalized_purchase_document_number
         else:
             purchase_document_number = normalized_purchase_document_number or None
@@ -690,7 +736,10 @@ class InventoryService:
             new={"number": number, "type": "EG"},
             request=request,
         )
-        await self.db.commit()
+        if commit:
+            await self.db.commit()
+        else:
+            await self.db.flush()
         return await self.repo.get_by_id(doc.id)
 
     async def create_baja(
@@ -1052,14 +1101,14 @@ class InventoryService:
             )
 
         normalized_code = raw_code.strip().upper()
-        if not re.fullmatch(r"[A-Z0-9]{8}", normalized_code):
+        if not re.fullmatch(r"\d{4}", normalized_code):
             raise ValidationAppError(
-                "APPROVAL_CODE_INVALID", "Approval code is invalid"
+                "APPROVAL_CODE_INVALID", "PIN de aprobación inválido"
             )
 
         if not verify_password(normalized_code, approver.approval_code_hash):
             raise ValidationAppError(
-                "APPROVAL_CODE_INVALID", "Approval code is invalid"
+                "APPROVAL_CODE_INVALID", "PIN de aprobación inválido"
             )
 
         now = datetime.now(timezone.utc)
@@ -1171,7 +1220,7 @@ class InventoryService:
             )
 
         pin = authorizer_pin.strip().upper()
-        if not re.fullmatch(r"[A-Z0-9]{8}", pin):
+        if not re.fullmatch(r"\d{4}", pin):
             raise ValidationAppError("VOID_PIN_INVALID", "PIN de autorización inválido")
 
         result = await self.db.execute(
@@ -1186,6 +1235,20 @@ class InventoryService:
                 return candidate
         raise ValidationAppError("VOID_PIN_INVALID", "PIN de autorización inválido")
 
+    async def _assert_void_possible(self, doc: InventoryDocument) -> None:
+        from app.models.product import Product
+
+        deltas: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+        for line in doc.lines:
+            deltas[line.product_id] += self._void_stock_delta(doc, line)
+        for product_id, delta in deltas.items():
+            product = await self.db.get(Product, product_id)
+            if product is not None and (product.stock_actual + delta) < 0:
+                raise ConflictError(
+                    "CANNOT_VOID_STOCK_CONSUMED",
+                    "No se puede anular: el stock de este documento ya fue consumido por movimientos posteriores.",
+                )
+
     async def void_document(
         self,
         document_id: int,
@@ -1193,6 +1256,7 @@ class InventoryService:
         actor_name: str,
         authorizer_pin: str | None = None,
         request=None,
+        commit: bool = True,
     ) -> InventoryDocument:
         doc = await self.repo.get_by_id(document_id)
         if not doc:
@@ -1208,23 +1272,7 @@ class InventoryService:
             raise NotFoundError("USER_NOT_FOUND", "User not found")
         authorizer = await self._resolve_void_authorizer(actor, authorizer_pin)
 
-        # Pre-check: voiding must not drive any product's stock negative (it
-        # would mean the document's stock was already consumed by later
-        # movements). Done BEFORE any mutation so the failure is a clean 409 and
-        # never an aborted-transaction 500. Works for PEPS and weighted average.
-        from collections import defaultdict
-        from app.models.product import Product
-
-        deltas: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
-        for line in doc.lines:
-            deltas[line.product_id] += self._void_stock_delta(doc, line)
-        for product_id, delta in deltas.items():
-            product = await self.db.get(Product, product_id)
-            if product is not None and (product.stock_actual + delta) < 0:
-                raise ConflictError(
-                    "CANNOT_VOID_STOCK_CONSUMED",
-                    "No se puede anular: el stock de este documento ya fue consumido por movimientos posteriores.",
-                )
+        await self._assert_void_possible(doc)
 
         # Reverse Kardex (restores lots / appends a reversal entry).
         method = await self._get_kardex_method()
@@ -1256,5 +1304,327 @@ class InventoryService:
             description=f"Documento {doc.number} anulado (autorizó: {authorizer.username})",
             request=request,
         )
-        await self.db.commit()
+        if commit:
+            await self.db.commit()
+        else:
+            await self.db.flush()
         return await self.repo.get_by_id(doc.id)
+
+    async def exchange_sale_document(
+        self,
+        document_id: int,
+        returned_lines: list,
+        new_lines: list,
+        purchase_document_type: str | None,
+        purchase_document_number: str | None,
+        purchase_document_date: datetime | None,
+        reference: str | None,
+        notes: str | None,
+        actor_id: int,
+        actor_name: str,
+        authorizer_pin: str | None,
+        request=None,
+    ) -> tuple[InventoryDocument, InventoryDocument, InventoryDocument, Decimal, Decimal, Decimal]:
+        original = await self.repo.get_by_id(document_id)
+        if not original:
+            raise NotFoundError("DOCUMENT_NOT_FOUND", "Document not found")
+        if original.doc_type != DocumentType.EG or original.egreso_type != "sale":
+            raise ValidationAppError(
+                "EXCHANGE_ONLY_FOR_SALE",
+                "Solo se permite generar cambio sobre egresos de venta",
+            )
+        if original.status != DocumentStatus.approved:
+            raise ConflictError(
+                "DOCUMENT_NOT_APPROVED",
+                "Solo se puede generar cambio sobre ventas aprobadas",
+            )
+        if original.exchange_original_document_id is not None:
+            raise ValidationAppError(
+                "EXCHANGE_ALREADY_FROM_CHANGE",
+                "No se permite generar cambio sobre una venta que proviene de otro cambio",
+            )
+        if (
+            original.exchange_return_document_id is not None
+            or original.exchange_new_sale_document_id is not None
+        ):
+            raise ValidationAppError(
+                "EXCHANGE_ALREADY_GENERATED",
+                "Este egreso ya tiene un cambio generado",
+            )
+
+        await self._validate_products_active(returned_lines)
+        await self._validate_products_active(new_lines)
+        await self._validate_quantity_mode(returned_lines)
+        await self._validate_quantity_mode(new_lines)
+
+        sold_by_product: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+        sold_price_totals: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+        for line in original.lines:
+            qty = Decimal(str(line.quantity))
+            sold_by_product[line.product_id] += qty
+            sold_price_totals[line.product_id] += qty * Decimal(str(line.unit_price or 0))
+
+        kardex_result = await self.db.execute(
+            select(KardexEntry)
+            .where(
+                KardexEntry.document_id == original.id,
+                KardexEntry.quantity_out > 0,
+            )
+            .order_by(KardexEntry.id.asc())
+        )
+        historical_cost_parts: dict[int, list[dict[str, Decimal]]] = defaultdict(list)
+        for entry in kardex_result.scalars().all():
+            historical_cost_parts[entry.product_id].append(
+                {
+                    "quantity": Decimal(str(entry.quantity_out)),
+                    "unit_cost": Decimal(str(entry.cost_out)),
+                }
+            )
+
+        returned_by_product: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+        returned_condition_by_product: dict[int, str] = {}
+        for line in returned_lines:
+            qty = Decimal(str(line.quantity))
+            product_id = int(line.product_id)
+            returned_by_product[product_id] += qty
+            returned_condition_by_product[product_id] = str(line.return_condition)
+
+        for product_id, qty in returned_by_product.items():
+            sold_qty = sold_by_product.get(product_id, Decimal("0"))
+            if sold_qty <= 0:
+                raise ValidationAppError(
+                    "EXCHANGE_PRODUCT_NOT_IN_SALE",
+                    f"El producto {product_id} no está en la venta original",
+                )
+            if qty > sold_qty:
+                raise ValidationAppError(
+                    "EXCHANGE_RETURN_EXCEEDS_SOLD",
+                    f"La devolución del producto {product_id} excede lo vendido",
+                )
+
+        new_by_product: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+        for line in new_lines:
+            product_id = int(line.product_id)
+            if product_id in returned_by_product:
+                raise ValidationAppError(
+                    "EXCHANGE_PRODUCT_IN_RETURN_AND_NEW",
+                    "Un producto devuelto no puede agregarse como producto nuevo",
+                )
+            new_by_product[product_id] += Decimal(str(line.quantity))
+
+        actor = await self.db.get(User, actor_id)
+        if not actor:
+            raise NotFoundError("USER_NOT_FOUND", "User not found")
+
+        if actor.role == UserRole.operator:
+            await self._resolve_void_authorizer(actor, authorizer_pin)
+
+        return_total = Decimal("0")
+        return_unit_cost_by_product: dict[int, Decimal] = {}
+        return_unit_price_by_product: dict[int, Decimal] = {}
+        for product_id, qty in returned_by_product.items():
+            sold_qty = sold_by_product[product_id]
+            sold_amount = sold_price_totals[product_id]
+            unit_price = (sold_amount / sold_qty) if sold_qty > 0 else Decimal("0")
+            return_unit_price_by_product[product_id] = unit_price
+            return_total += unit_price * qty
+
+            remaining = qty
+            consumed_cost_total = Decimal("0")
+            for part in historical_cost_parts.get(product_id, []):
+                if remaining <= 0:
+                    break
+                available = part["quantity"]
+                if available <= 0:
+                    continue
+                take = min(available, remaining)
+                consumed_cost_total += take * part["unit_cost"]
+                part["quantity"] = available - take
+                remaining -= take
+            if remaining > 0:
+                raise ValidationAppError(
+                    "EXCHANGE_HISTORICAL_COST_NOT_FOUND",
+                    "No se pudo resolver el costo histórico exacto de la venta original",
+                )
+            return_unit_cost_by_product[product_id] = (
+                consumed_cost_total / qty if qty > 0 else Decimal("0")
+            )
+
+        new_total = Decimal("0")
+        normalized_new_lines = []
+        for line in new_lines:
+            product = await self.product_repo.get_by_id(int(line.product_id))
+            if not product:
+                raise ValidationAppError(
+                    "PRODUCT_NOT_FOUND", f"Product {line.product_id} not found"
+                )
+            qty = Decimal(str(line.quantity))
+            unit_price = (
+                Decimal(str(line.unit_price))
+                if getattr(line, "unit_price", None) is not None
+                else Decimal(str(product.pvp or 0))
+            )
+            new_total += unit_price * qty
+            normalized_new_lines.append(
+                SimpleNamespace(
+                    product_id=int(line.product_id),
+                    quantity=qty,
+                    unit_cost=Decimal("0"),
+                    unit_price=unit_price,
+                    unit_price_base=(
+                        Decimal(str(line.unit_price_base))
+                        if getattr(line, "unit_price_base", None) is not None
+                        else unit_price
+                    ),
+                    discount_type=getattr(line, "discount_type", None),
+                    discount_value=getattr(line, "discount_value", None),
+                )
+            )
+
+        if not normalized_new_lines:
+            raise ValidationAppError(
+                "EXCHANGE_EMPTY_RESULT",
+                "El cambio debe incluir al menos un producto nuevo",
+            )
+
+        await self._validate_enabled_ingreso_type("customer_return")
+        self._validate_document_type_for_ingreso("customer_return", "credit_note")
+
+        return_doc_number = await self.repo.generate_document_number(
+            DocumentType.IN,
+            datetime.now(timezone.utc).year,
+        )
+        reference_to_original = f"CAMBIO DE PRODUCTO - VENTA ORIGINAL {original.number}"
+        if reference:
+            reference_to_original = f"{reference_to_original} - {reference}"
+
+        return_doc = InventoryDocument(
+            number=return_doc_number,
+            doc_type=DocumentType.IN,
+            status=DocumentStatus.approved,
+            ingreso_type="customer_return",
+            purchase_document_type="credit_note",
+            purchase_document_number=original.number,
+            purchase_document_date=purchase_document_date or datetime.now(timezone.utc),
+            reference=reference_to_original,
+            notes=notes,
+            created_by=actor_id,
+        )
+        return_doc_lines = [
+            InventoryDocumentLine(
+                product_id=product_id,
+                quantity=qty,
+                unit_cost=return_unit_cost_by_product[product_id],
+                unit_price=return_unit_price_by_product[product_id],
+                unit_price_base=return_unit_price_by_product[product_id],
+                return_condition=returned_condition_by_product[product_id],
+            )
+            for product_id, qty in returned_by_product.items()
+        ]
+        return_doc = await self.repo.create_document(return_doc, return_doc_lines)
+
+        for line in return_doc.lines:
+            await self.product_repo.update_stock(line.product_id, line.quantity)
+
+        method = await self._get_kardex_method()
+        kardex = KardexService(self.db, method)
+        await kardex.record_entry(return_doc, return_doc.lines)
+
+        await self.audit.log(
+            AuditAction.CREATE,
+            user_id=actor_id,
+            username=actor_name,
+            entity_type="inventory_document",
+            entity_id=return_doc.id,
+            new={"number": return_doc.number, "type": "IN", "ingreso_type": "customer_return"},
+            request=request,
+        )
+
+        doc_type = purchase_document_type or original.purchase_document_type or "none"
+        doc_number = purchase_document_number
+        if doc_number is None:
+            doc_number = original.purchase_document_number
+            if doc_type != "none":
+                doc_number = await self._build_exchange_document_number(doc_number)
+        sale_date = purchase_document_date or original.purchase_document_date
+
+        difference_total = (new_total - return_total).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
+        original_notes = (notes or "").strip()
+        change_note = (
+            f"Generado por cambio de producto del documento {original.number}. "
+            f"Devolución: {return_total:.2f}; Nuevo egreso: {new_total:.2f}; "
+            f"Diferencia caja/cuentas: {difference_total:.2f}."
+        )
+        final_notes = f"{change_note} {original_notes}".strip()
+
+        new_doc = await self.create_egreso(
+            "sale",
+            doc_type,
+            doc_number,
+            original.seller_name,
+            sale_date,
+            None,
+            None,
+            reference or original.reference,
+            final_notes,
+            normalized_new_lines,
+            actor_id,
+            actor_name,
+            request,
+            commit=False,
+            validate_seller_enabled=False,
+        )
+
+        original.exchange_return_document_id = return_doc.id
+        original.exchange_return_document_number = return_doc.number
+        original.exchange_new_sale_document_id = new_doc.id
+        original.exchange_new_sale_document_number = new_doc.number
+
+        return_doc.exchange_original_document_id = original.id
+        return_doc.exchange_original_document_number = original.number
+        return_doc.exchange_new_sale_document_id = new_doc.id
+        return_doc.exchange_new_sale_document_number = new_doc.number
+
+        new_doc.exchange_original_document_id = original.id
+        new_doc.exchange_original_document_number = original.number
+        new_doc.exchange_return_document_id = return_doc.id
+        new_doc.exchange_return_document_number = return_doc.number
+
+        await self.audit.log(
+            AuditAction.UPDATE,
+            user_id=actor_id,
+            username=actor_name,
+            entity_type="inventory_sale_exchange",
+            entity_id=new_doc.id,
+            previous={
+                "original_document_id": original.id,
+                "original_document_number": original.number,
+            },
+            new={
+                "return_document_id": return_doc.id,
+                "return_document_number": return_doc.number,
+                "new_document_id": new_doc.id,
+                "new_document_number": new_doc.number,
+                "return_total": str(return_total),
+                "new_total": str(new_total),
+                "difference_total": str(difference_total),
+            },
+            description=(
+                f"Cambio de venta {original.number} -> {return_doc.number} -> {new_doc.number} "
+                f"(delta {difference_total:.2f})"
+            ),
+            request=request,
+        )
+        await self.db.commit()
+
+        return (
+            await self.repo.get_by_id(original.id),
+            await self.repo.get_by_id(return_doc.id),
+            await self.repo.get_by_id(new_doc.id),
+            return_total,
+            new_total,
+            difference_total,
+        )

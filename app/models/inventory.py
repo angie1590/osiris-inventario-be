@@ -67,6 +67,12 @@ class InventoryDocument(Base):
     adjustment_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
     reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exchange_original_document_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    exchange_original_document_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    exchange_return_document_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    exchange_return_document_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    exchange_new_sale_document_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    exchange_new_sale_document_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
     adjust_type: Mapped[AdjustType | None] = mapped_column(
         Enum(AdjustType), nullable=True
     )
@@ -278,6 +284,9 @@ class InventoryDocumentLine(Base):
     )
     discount_type: Mapped[str | None] = mapped_column(String(10), nullable=True)
     discount_value: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    return_condition: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    return_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    return_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     lot_id: Mapped[int | None] = mapped_column(
         ForeignKey("inventory_lots.id", ondelete="SET NULL"), nullable=True
     )

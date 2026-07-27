@@ -37,6 +37,8 @@ from app.schemas.inventory import (
     SupplierCreate,
     SupplierResponse,
     SupplierUpdate,
+    SaleExchangeCreate,
+    SaleExchangeResponse,
     VoidRequest,
 )
 from app.services.inventory_service import InventoryService
@@ -549,6 +551,44 @@ async def get_egreso(
     if not doc or doc.doc_type != DocumentType.EG:
         raise NotFoundError("DOCUMENT_NOT_FOUND", "Egreso not found")
     return doc
+
+
+@router.post(
+    "/egresos/{document_id}/exchange",
+    response_model=SaleExchangeResponse,
+)
+async def exchange_sale(
+    document_id: int,
+    body: SaleExchangeCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_read_roles),
+):
+    svc = InventoryService(db)
+    original_doc, return_doc, new_doc, return_total, new_total, difference_total = (
+        await svc.exchange_sale_document(
+            document_id,
+            body.returned_lines,
+            body.new_lines,
+            body.purchase_document_type,
+            body.purchase_document_number,
+            body.purchase_document_date,
+            body.reference,
+            body.notes,
+            current_user.id,
+            current_user.username,
+            body.authorizer_pin,
+            request,
+        )
+    )
+    return {
+        "original_document": original_doc,
+        "return_document": return_doc,
+        "new_document": new_doc,
+        "return_total": return_total,
+        "new_total": new_total,
+        "difference_total": difference_total,
+    }
 
 
 # --- Bajas ---

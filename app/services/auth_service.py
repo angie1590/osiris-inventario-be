@@ -232,10 +232,10 @@ class AuthService:
             )
 
         normalized = approval_code.strip().upper()
-        if not re.fullmatch(r"[A-Z0-9]{8}", normalized):
+        if not re.fullmatch(r"\d{4}", normalized):
             raise ValidationAppError(
                 "INVALID_APPROVAL_CODE_FORMAT",
-                "Approval code must be exactly 8 alphanumeric characters",
+                "El PIN debe tener exactamente 4 dígitos",
             )
 
         user.approval_code_hash = hash_password(normalized)
