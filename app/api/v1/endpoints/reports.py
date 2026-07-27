@@ -1,5 +1,6 @@
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
+from collections import defaultdict
 from typing import Any, Callable, Literal
 from zoneinfo import ZoneInfo
 
@@ -110,6 +111,40 @@ def _movement_type_label(flow: Literal["ingresos", "egresos"], value: str) -> st
     if flow == "ingresos":
         return _INGRESO_TYPE_LABELS.get(value, value)
     return _EGRESO_TYPE_LABELS.get(value, value)
+
+
+def _sale_line_amount(
+    quantity: Decimal,
+    unit_price: Decimal,
+    unit_price_base: Decimal | None,
+    discount_type: str | None,
+    discount_value: Decimal | None,
+) -> Decimal:
+    final_total = quantity * unit_price
+    has_discount_data = (
+        unit_price_base is not None
+        or discount_type is not None
+        or discount_value is not None
+    )
+    if not has_discount_data:
+        return final_total
+
+    base_price = unit_price_base if unit_price_base is not None else unit_price
+    subtotal = quantity * base_price
+    raw_discount = max(Decimal("0"), discount_value or Decimal("0"))
+    if discount_type == "percent":
+        discount = (subtotal * min(raw_discount, Decimal("100"))) / Decimal("100")
+    else:
+        discount = raw_discount
+    return max(Decimal("0"), subtotal - min(subtotal, discount))
+
+
+def _local_date_key(dt: datetime) -> str:
+    return dt.astimezone(ZoneInfo(settings.APP_TIMEZONE)).date().isoformat()
+
+
+def _local_month_key(dt: datetime) -> str:
+    return dt.astimezone(ZoneInfo(settings.APP_TIMEZONE)).strftime("%Y-%m")
 
 
 async def _username_map(db: AsyncSession, user_ids: set[int]) -> dict[int, str]:
@@ -254,6 +289,21 @@ async def _get_bool_param(db: AsyncSession, key: str, default: bool = False) -> 
     if not param:
         return default
     return str(param.value).strip().lower() in ("true", "1", "yes")
+
+
+async def _get_decimal_param(
+    db: AsyncSession,
+    key: str,
+    default: Decimal = Decimal("0"),
+) -> Decimal:
+    result = await db.execute(select(SystemParam).where(SystemParam.key == key))
+    param = result.scalar_one_or_none()
+    if not param:
+        return default
+    try:
+        return Decimal(str(param.value).strip())
+    except Exception:
+        return default
 
 
 @router.get("/settings")
@@ -445,6 +495,186 @@ async def report_egresos(
         return _export_response("pdf", data, "reporte_egresos")
     data = ExportService.to_excel(headers, rows, title, company_header=ch)
     return _export_response("excel", data, "reporte_egresos")
+
+
+@router.get("/ventas")
+async def report_ventas(
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+    _company: None = Depends(require_company_configured),
+):
+    date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
+    commission_percent = await _get_decimal_param(
+        db, "seller_commission_percent", default=Decimal("0")
+    )
+
+    sale_result = await db.execute(
+        select(InventoryDocument).where(
+            InventoryDocument.doc_type == DocumentType.EG,
+            InventoryDocument.ingreso_type == "sale",
+            InventoryDocument.created_at >= date_from_dt,
+            InventoryDocument.created_at <= date_to_dt,
+        )
+    )
+    purchase_result = await db.execute(
+        select(InventoryDocument).where(
+            InventoryDocument.doc_type == DocumentType.IN,
+            InventoryDocument.ingreso_type == "purchase",
+            InventoryDocument.created_at >= date_from_dt,
+            InventoryDocument.created_at <= date_to_dt,
+        )
+    )
+
+    sale_docs = list(sale_result.scalars().unique().all())
+    purchase_docs = list(purchase_result.scalars().unique().all())
+    sale_doc_ids = [doc.id for doc in sale_docs]
+    purchase_doc_ids = [doc.id for doc in purchase_docs]
+
+    sale_amount_by_doc: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+    purchase_amount_by_doc: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+
+    if sale_doc_ids:
+        sale_lines_result = await db.execute(
+            select(
+                InventoryDocumentLine.document_id,
+                InventoryDocumentLine.quantity,
+                InventoryDocumentLine.unit_price,
+                InventoryDocumentLine.unit_price_base,
+                InventoryDocumentLine.discount_type,
+                InventoryDocumentLine.discount_value,
+            )
+            .where(InventoryDocumentLine.document_id.in_(sale_doc_ids))
+            .order_by(InventoryDocumentLine.document_id.asc(), InventoryDocumentLine.id.asc())
+        )
+        for doc_id, quantity, unit_price, unit_price_base, discount_type, discount_value in sale_lines_result.all():
+            sale_amount_by_doc[int(doc_id)] += _sale_line_amount(
+                Decimal(str(quantity or 0)),
+                Decimal(str(unit_price or 0)),
+                Decimal(str(unit_price_base)) if unit_price_base is not None else None,
+                discount_type,
+                Decimal(str(discount_value)) if discount_value is not None else None,
+            )
+
+    if purchase_doc_ids:
+        purchase_lines_result = await db.execute(
+            select(
+                InventoryDocumentLine.document_id,
+                InventoryDocumentLine.quantity,
+                InventoryDocumentLine.unit_cost,
+            )
+            .where(InventoryDocumentLine.document_id.in_(purchase_doc_ids))
+            .order_by(InventoryDocumentLine.document_id.asc(), InventoryDocumentLine.id.asc())
+        )
+        for doc_id, quantity, unit_cost in purchase_lines_result.all():
+            purchase_amount_by_doc[int(doc_id)] += Decimal(str(quantity or 0)) * Decimal(
+                str(unit_cost or 0)
+            )
+
+    daily_closings: dict[str, dict[str, Decimal | int]] = defaultdict(
+        lambda: {"sales_count": 0, "sales_total": Decimal("0")}
+    )
+    seller_summary: dict[str, dict[str, Decimal | int]] = defaultdict(
+        lambda: {"sales_count": 0, "sales_total": Decimal("0"), "commission_amount": Decimal("0")}
+    )
+    seller_commissions_by_month: dict[
+        tuple[str, str], dict[str, Decimal | int | str]
+    ] = defaultdict(
+        lambda: {
+            "sales_count": 0,
+            "sales_total": Decimal("0"),
+            "commission_amount": Decimal("0"),
+        }
+    )
+
+    sales_total = Decimal("0")
+    purchases_total = Decimal("0")
+    sales_count = 0
+    purchases_count = 0
+    commission_total = Decimal("0")
+
+    for doc in sale_docs:
+        doc_total = sale_amount_by_doc.get(doc.id, Decimal("0"))
+        seller_name = (doc.seller_name or "SIN VENDEDOR").strip().upper() or "SIN VENDEDOR"
+        date_key = _local_date_key(doc.created_at)
+        month_key = _local_month_key(doc.created_at)
+        doc_commission = (doc_total * commission_percent) / Decimal("100")
+
+        sales_total += doc_total
+        commission_total += doc_commission
+        sales_count += 1
+        daily = daily_closings[date_key]
+        daily["sales_count"] = int(daily["sales_count"]) + 1
+        daily["sales_total"] = Decimal(str(daily["sales_total"])) + doc_total
+
+        seller = seller_summary[seller_name]
+        seller["sales_count"] = int(seller["sales_count"]) + 1
+        seller["sales_total"] = Decimal(str(seller["sales_total"])) + doc_total
+        seller["commission_amount"] = Decimal(str(seller["commission_amount"])) + doc_commission
+
+        month_key_tuple = (month_key, seller_name)
+        monthly = seller_commissions_by_month[month_key_tuple]
+        monthly["seller_name"] = seller_name
+        monthly["month"] = month_key
+        monthly["sales_count"] = int(monthly["sales_count"]) + 1
+        monthly["sales_total"] = Decimal(str(monthly["sales_total"])) + doc_total
+        monthly["commission_amount"] = Decimal(str(monthly["commission_amount"])) + doc_commission
+
+    for doc in purchase_docs:
+        doc_total = purchase_amount_by_doc.get(doc.id, Decimal("0"))
+        purchases_total += doc_total
+        purchases_count += 1
+
+    daily_closing_rows = [
+        {
+            "date": date_key,
+            "sales_count": int(values["sales_count"]),
+            "sales_total": float(values["sales_total"]),
+        }
+        for date_key, values in sorted(daily_closings.items())
+    ]
+
+    seller_summary_rows = [
+        {
+            "seller_name": seller_name,
+            "sales_count": int(values["sales_count"]),
+            "sales_total": float(values["sales_total"]),
+            "commission_percent": float(commission_percent),
+            "commission_amount": float(values["commission_amount"]),
+        }
+        for seller_name, values in sorted(
+            seller_summary.items(), key=lambda item: float(item[1]["sales_total"]), reverse=True
+        )
+    ]
+
+    commissions_by_month_rows = [
+        {
+            "month": month,
+            "seller_name": seller_name,
+            "sales_count": int(values["sales_count"]),
+            "sales_total": float(values["sales_total"]),
+            "commission_percent": float(commission_percent),
+            "commission_amount": float(values["commission_amount"]),
+        }
+        for (month, seller_name), values in sorted(seller_commissions_by_month.items())
+    ]
+
+    return {
+        "period": {"from": date_from_dt.isoformat(), "to": date_to_dt.isoformat()},
+        "summary": {
+            "sales_total": float(sales_total),
+            "sales_count": sales_count,
+            "purchase_total": float(purchases_total),
+            "purchase_count": purchases_count,
+            "utility": float(sales_total - purchases_total),
+            "commission_percent": float(commission_percent),
+            "commission_total": float(commission_total),
+        },
+        "daily_closings": daily_closing_rows,
+        "sales_by_seller": seller_summary_rows,
+        "commissions_by_month": commissions_by_month_rows,
+    }
 
 
 @router.get("/bajas")

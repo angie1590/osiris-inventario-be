@@ -55,6 +55,7 @@ async def _seed_egreso(client, admin_token, operator_token, egreso_type="sale"):
     prod_id = await _seed_ingreso(client, admin_token, operator_token)
     payload = {
         "egreso_type": egreso_type,
+        "purchase_document_type": "none",
         "lines": [{"product_id": prod_id, "quantity": "1", "unit_price": "3.00"}],
     }
     if egreso_type == "sale":
@@ -113,6 +114,7 @@ async def test_report_ingresos_filters_by_type(
         "/api/v1/inventory/ingresos",
         json={
             "ingreso_type": "production",
+            "purchase_document_type": "none",
             "lines": [{"product_id": prod_id, "quantity": "2", "unit_cost": "2.00"}],
         },
         headers={"Authorization": f"Bearer {operator_token}"},
@@ -265,6 +267,76 @@ async def test_report_consolidado(
     assert "active_products" in data
     assert "products_below_minimum" in data
     assert data["movements"]["IN"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_report_ventas_json(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+    company_config,
+    db_session: AsyncSession,
+):
+    from app.models.system_param import SystemParam
+
+    company_config.sellers = ["VENDEDOR TEST", "OTRO VENDEDOR"]
+    db_session.add(
+        SystemParam(key="seller_commission_percent", value="10", description="test")
+    )
+    await db_session.commit()
+
+    cat = await client.post(
+        "/api/v1/categories",
+        json={"name": "SalesReportCat"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    cat_id = cat.json()["id"]
+    prod = await client.post(
+        "/api/v1/products",
+        json={"name": "SalesReportProd", "category_id": cat_id, "pvp": "1.00"},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    prod_id = prod.json()["id"]
+
+    await client.post(
+        "/api/v1/inventory/ingresos",
+        json={"lines": [{"product_id": prod_id, "quantity": "10", "unit_cost": "5.00"}]},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "seller_name": "VENDEDOR TEST",
+            "purchase_document_type": "none",
+            "lines": [{"product_id": prod_id, "quantity": "1", "unit_price": "12.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "seller_name": "OTRO VENDEDOR",
+            "purchase_document_type": "none",
+            "lines": [{"product_id": prod_id, "quantity": "1", "unit_price": "18.00"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    frm, to = _range(days_back=1)
+    resp = await client.get(
+        "/api/v1/reports/ventas",
+        params={"date_from": frm, "date_to": to},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert Decimal(str(data["summary"]["sales_total"])) == Decimal("30")
+    assert Decimal(str(data["summary"]["purchase_total"])) == Decimal("50")
+    assert Decimal(str(data["summary"]["utility"])) == Decimal("-20")
+    assert Decimal(str(data["summary"]["commission_total"])) == Decimal("3")
+    assert len(data["daily_closings"]) >= 1
+    assert len(data["sales_by_seller"]) == 2
+    assert len(data["commissions_by_month"]) == 2
 
 
 @pytest.mark.asyncio
