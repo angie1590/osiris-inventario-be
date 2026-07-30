@@ -184,11 +184,98 @@ Tambien puedes ejecutar directamente con doble clic sobre:
 - `start-docker.bat`
 - `stop-docker.bat`
 
+## Instalacion Windows (servidor + cliente en el mismo PC)
+
+Para instalar todo en una sola maquina Windows en modo produccion (Nginx + API + Postgres + Redis), usa:
+
+```bat
+cd osiris-inventario-be
+install-windows.bat
+```
+
+Esto ejecuta `install-windows.ps1`, que:
+
+- instala Docker Desktop con `winget` si falta,
+- instala Git con `winget` si falta,
+- inicia Docker Desktop y espera el motor,
+- opcionalmente actualiza backend/frontend desde Git (`fetch + checkout + pull`),
+- pide en consola toda la configuracion de `.env.prod` (usuario/clave DB, `SECRET_KEY`, CORS, puerto web, etc.),
+- levanta `postgres`, `redis`, `api` y `web` con `docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build`,
+- valida `http://localhost:<WEB_PORT>/health`,
+- abre el navegador en el frontend publicado por Nginx.
+
+Si Docker Desktop y Git ya estan instalados, puedes omitir instalacion de dependencias:
+
+```powershell
+./install-windows.ps1 -SkipDependencyInstall
+```
+
+Si no quieres sincronizar desde Git en una ejecucion puntual:
+
+```powershell
+./install-windows.ps1 -SkipGitSync
+```
+
+### Instalador de 1 solo archivo BAT
+
+Si quieres llevar solo un archivo a otra PC Windows, usa `bootstrap-install-windows.bat`.
+
+Flujo:
+
+- pide directorio de instalacion,
+- pide URLs Git de backend y frontend,
+- instala Git/Docker Desktop si faltan,
+- clona o actualiza ambos repositorios,
+- ejecuta automaticamente `install-windows.ps1` del backend.
+
+Ejecucion:
+
+```bat
+bootstrap-install-windows.bat
+```
+
+Importante: para este modo se necesita acceso a internet y URLs Git validas de ambos repositorios.
+
+### Actualizar una instalacion existente (Windows)
+
+Si el sistema ya esta instalado, puedes actualizarlo con los ultimos cambios del repo usando:
+
+```bat
+update-windows.bat
+```
+
+Este script:
+
+- hace `fetch + checkout + pull` en backend y frontend,
+- reaplica el despliegue con `docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build`,
+- valida salud en `http://localhost:<WEB_PORT>/health`.
+
+Al finalizar la instalacion tambien puede configurar backup diario:
+
+- pregunta hora (`HH:mm`),
+- pregunta ruta de destino (por ejemplo una memoria flash `E:\osiris-backups`),
+- crea tarea programada de Windows `OsirisDailyDatabaseBackup`,
+- ejecuta `backup-db.ps1` para generar `.sql` y eliminar respaldos antiguos segun retencion.
+
+Opciones comunes:
+
+```bat
+update-windows.bat -Branch main
+update-windows.bat -SkipGitPull
+update-windows.bat -SkipBuild
+```
+
+Notas:
+
+- `-SkipGitPull` redepliega con el codigo local actual.
+- `-SkipBuild` evita reconstruir imagenes y solo recrea servicios si aplica.
+- si la memoria flash no esta conectada al momento del backup, la tarea fallara ese dia y continuara al siguiente intento.
+
 ### URLs
 
-- Frontend: http://localhost:5173
-- API: http://localhost:8000
-- OpenAPI: http://localhost:8000/docs
+- Frontend: `http://localhost` (o `http://localhost:<WEB_PORT>` si cambias puerto)
+- API (proxy): `http://localhost/api/v1`
+- OpenAPI: `http://localhost/docs`
 
 ## Arquitectura
 
