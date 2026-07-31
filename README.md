@@ -242,6 +242,20 @@ Si ya existe `.env.prod`, el instalador ofrece reutilizarlo. Acepta esa opcion p
 
 El despliegue actual conserva el codigo fuente en `C:\OsirisDeploy` porque Docker construye las imagenes localmente y el actualizador usa Git. Los contenedores no leen directamente esos archivos durante la ejecucion, pero se necesitan para reconstruir y actualizar el sistema. Para eliminar el codigo fuente del servidor haria falta publicar imagenes preconstruidas en un registro como GitHub Container Registry.
 
+### Conectar clientes Windows
+
+Copia `encontrar-osiris.bat` en cada cliente Windows y ejecutalo con doble clic. No requiere Git, Docker ni permisos de administrador.
+
+El script:
+
+- prueba primero el ultimo servidor encontrado y `osiris.local`,
+- busca OSIRIS en las redes locales activas si esas direcciones no responden,
+- valida que la API encontrada sea `Osiris Inventario API`,
+- guarda la direccion en `%LOCALAPPDATA%\Osiris\server-url.txt`,
+- abre el sistema en el navegador predeterminado.
+
+El cliente y el servidor deben estar conectados a la misma red local. Si cambia la IP del servidor, el script descarta automaticamente la direccion guardada y vuelve a buscar.
+
 ### Actualizar una instalacion existente (Windows)
 
 Si el sistema ya esta instalado, puedes actualizarlo con los ultimos cambios del repo usando:
