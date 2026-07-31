@@ -263,6 +263,23 @@ if ($reuseConfig) {
   if ($envValues.ContainsKey("WEB_PORT")) {
     $webPort = $envValues["WEB_PORT"]
   }
+  if ($envValues.ContainsKey("CORS_ORIGINS")) {
+    try {
+      $null = $envValues["CORS_ORIGINS"] | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+      $origins = [regex]::Matches($envValues["CORS_ORIGINS"], 'https?://[^,\]"'']+') | ForEach-Object { $_.Value }
+      if ($origins.Count -eq 0) {
+        throw "CORS_ORIGINS no contiene URLs validas en $EnvFile"
+      }
+      $corsOrigins = ConvertTo-Json -InputObject @($origins) -Compress
+      $envContent = (Get-Content $EnvFile | ForEach-Object {
+        if ($_.StartsWith("CORS_ORIGINS=")) { "CORS_ORIGINS=$corsOrigins" } else { $_ }
+      }) -join "`r`n"
+      [System.IO.File]::WriteAllText($EnvFile, "$envContent`r`n", (New-Object System.Text.UTF8Encoding($false)))
+      Write-Host "Se corrigio CORS_ORIGINS en .env.prod."
+    }
+  }
   Write-Host "Se conserva .env.prod y la base de datos existente."
 }
 else {
@@ -278,7 +295,7 @@ else {
   $kardexMethod = Prompt-Value "KARDEX_METHOD (PEPS o WEIGHTED_AVERAGE)" "PEPS"
   $maxRangeDays = Prompt-Value "MAX_EXPORT_DATE_RANGE_DAYS" "90"
   $timeZone = Prompt-Value "APP_TIMEZONE" "America/Guayaquil"
-  $corsOrigins = Prompt-Value "CORS_ORIGINS (JSON array)" "[\"http://$serverHost\",\"http://localhost\"]"
+  $corsOrigins = ConvertTo-Json -InputObject @("http://$serverHost", "http://localhost") -Compress
 
   $envContent = @"
 POSTGRES_USER=$postgresUser
