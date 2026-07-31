@@ -1,10 +1,10 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [string]$Branch = "main",
   [switch]$SkipGitPull,
   [switch]$SkipBuild
 )
+
+$ErrorActionPreference = "Stop"
 
 $BackendDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $FrontendDir = Join-Path (Split-Path -Parent $BackendDir) "osiris-inventario-fe"

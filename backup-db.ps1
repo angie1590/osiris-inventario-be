@@ -1,10 +1,10 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [Parameter(Mandatory = $true)]
   [string]$BackupDir,
   [int]$RetentionDays = 14
 )
+
+$ErrorActionPreference = "Stop"
 
 $BackendDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ComposeFile = Join-Path $BackendDir "docker-compose.prod.yml"

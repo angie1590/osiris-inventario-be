@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal EnableExtensions
 
 echo ==============================================
 echo   OSIRIS Bootstrap Installer (1 archivo BAT)
@@ -48,6 +48,14 @@ if errorlevel 1 (
     echo No se pudo instalar Git.
     exit /b 1
   )
+  set "PATH=%PATH%;%ProgramFiles%\Git\cmd"
+  where git >nul 2>&1
+  if errorlevel 1 (
+    echo Git fue instalado, pero Windows aun no actualizo el PATH.
+    echo Cierra esta ventana y ejecuta nuevamente este mismo BAT.
+    pause
+    exit /b 2
+  )
 )
 
 echo.
@@ -66,6 +74,14 @@ if errorlevel 1 (
     echo No se pudo instalar Docker Desktop.
     exit /b 1
   )
+  set "PATH=%PATH%;%ProgramFiles%\Docker\Docker\resources\bin"
+  where docker >nul 2>&1
+  if errorlevel 1 (
+    echo Docker Desktop fue instalado, pero Windows requiere reiniciar sesion o el PC.
+    echo Luego ejecuta nuevamente este mismo BAT; continuara sin borrar carpetas.
+    pause
+    exit /b 2
+  )
 )
 
 echo.
@@ -82,6 +98,11 @@ if exist "%BACKEND_DIR%\.git" (
   git -C "%BACKEND_DIR%" pull --ff-only origin "%BRANCH%"
   if errorlevel 1 exit /b 1
 ) else (
+  if exist "%BACKEND_DIR%" (
+    echo Eliminando clon incompleto de backend...
+    rmdir /s /q "%BACKEND_DIR%"
+    if errorlevel 1 exit /b 1
+  )
   echo Clonando backend...
   git clone "%BACKEND_REPO%" "%BACKEND_DIR%"
   if errorlevel 1 exit /b 1
@@ -98,6 +119,11 @@ if exist "%FRONTEND_DIR%\.git" (
   git -C "%FRONTEND_DIR%" pull --ff-only origin "%BRANCH%"
   if errorlevel 1 exit /b 1
 ) else (
+  if exist "%FRONTEND_DIR%" (
+    echo Eliminando clon incompleto de frontend...
+    rmdir /s /q "%FRONTEND_DIR%"
+    if errorlevel 1 exit /b 1
+  )
   echo Clonando frontend...
   git clone "%FRONTEND_REPO%" "%FRONTEND_DIR%"
   if errorlevel 1 exit /b 1
@@ -115,14 +141,15 @@ if not exist "%INSTALL_PS1%" (
 
 echo.
 echo [6/6] Ejecutando instalador productivo...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_PS1%" -SkipDependencyInstall
-set "EXIT_CODE=%ERRORLEVEL%"
-if not "%EXIT_CODE%"=="0" (
-  echo Instalacion finalizo con error (%EXIT_CODE%).
-  exit /b %EXIT_CODE%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_PS1%" -SkipDependencyInstall -SkipGitSync
+if errorlevel 1 (
+  echo Instalacion finalizo con error.
+  pause
+  exit /b 1
 )
 
 echo.
 echo Instalacion completada.
 echo Si es la primera vez con Docker Desktop, puede requerir reinicio de sesion/PC.
+pause
 exit /b 0
