@@ -32,6 +32,32 @@ function Prompt-Required($Prompt) {
   }
 }
 
+function Prompt-SafePassword($Prompt) {
+  $default = New-RandomSecret 24
+  while ($true) {
+    $value = Prompt-Value $Prompt $default
+    if ($value -match '^[A-Za-z0-9_-]{12,64}$') {
+      return $value
+    }
+    Write-Host "Usa entre 12 y 64 caracteres: letras, numeros, guion o guion bajo."
+  }
+}
+
+function Read-EnvFile($Path) {
+  $values = @{}
+  Get-Content $Path | ForEach-Object {
+    $line = $_.Trim()
+    if (-not $line -or $line.StartsWith("#")) {
+      return
+    }
+    $parts = $line.Split("=", 2)
+    if ($parts.Count -eq 2) {
+      $values[$parts[0]] = $parts[1]
+    }
+  }
+  return $values
+}
+
 function Prompt-Time($Prompt, $Default = "02:00") {
   while ($true) {
     $raw = Prompt-Value $Prompt $Default
@@ -191,21 +217,70 @@ if (-not $SkipGitSync) {
   }
 }
 
-$serverHost = Prompt-Value "Nombre del servidor para clientes LAN (ej. osiris.local)" "osiris.local"
-$webPort = Prompt-Value "Puerto HTTP para frontend" "80"
-$postgresUser = Prompt-Value "POSTGRES_USER" "osiris"
-$postgresPassword = Prompt-Required "POSTGRES_PASSWORD"
-$postgresDb = Prompt-Value "POSTGRES_DB" "osiris_inventario"
-$secretDefault = New-RandomSecret
-$secretKey = Prompt-Value "SECRET_KEY" $secretDefault
-$accessMinutes = Prompt-Value "ACCESS_TOKEN_EXPIRE_MINUTES" "30"
-$refreshDays = Prompt-Value "REFRESH_TOKEN_EXPIRE_DAYS" "7"
-$kardexMethod = Prompt-Value "KARDEX_METHOD (PEPS o WEIGHTED_AVERAGE)" "PEPS"
-$maxRangeDays = Prompt-Value "MAX_EXPORT_DATE_RANGE_DAYS" "90"
-$timeZone = Prompt-Value "APP_TIMEZONE" "America/Guayaquil"
-$corsOrigins = Prompt-Value "CORS_ORIGINS (JSON array)" "[\"http://$serverHost\",\"http://localhost\"]"
+$webPort = "80"
+$reuseConfig = $false
 
-$envContent = @"
+if (Test-Path $EnvFile) {
+  $reuseAnswer = Prompt-Value "Ya existe .env.prod. Reutilizar configuracion y datos actuales? (S/n)" "S"
+  $reuseConfig = $reuseAnswer -notmatch "^[nN]"
+  if (-not $reuseConfig) {
+    Write-Host "Cambiar POSTGRES_PASSWORD no modifica una base ya inicializada." -ForegroundColor Yellow
+    $resetAnswer = Prompt-Value "Eliminar la base actual y configurar desde cero? Se perderan sus datos (s/N)" "N"
+    if ($resetAnswer -match "^[sS]") {
+      docker compose --env-file $EnvFile -f $ComposeFile down --volumes --remove-orphans
+      if ($LASTEXITCODE -ne 0) {
+        throw "No se pudo limpiar la instalacion anterior."
+      }
+      Remove-Item $EnvFile -Force
+    }
+    else {
+      throw "Configuracion cancelada para proteger la base actual. Usa update-windows.bat para actualizar sin cambiar credenciales."
+    }
+  }
+}
+else {
+  $projectName = (Split-Path $BackendDir -Leaf).ToLower() -replace '[^a-z0-9_-]', ''
+  $databaseVolume = "${projectName}_postgres_data"
+  docker volume inspect $databaseVolume *> $null
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "Se encontro una base previa ($databaseVolume), pero falta .env.prod." -ForegroundColor Yellow
+    Write-Host "Esto ocurre si se borro la carpeta despues de una instalacion parcial." -ForegroundColor Yellow
+    $resetAnswer = Prompt-Value "Eliminar esa base y empezar desde cero? Se perderan sus datos (s/N)" "N"
+    if ($resetAnswer -match "^[sS]") {
+      docker compose -f $ComposeFile down --volumes --remove-orphans
+      if ($LASTEXITCODE -ne 0) {
+        throw "No se pudo limpiar la instalacion parcial."
+      }
+    }
+    else {
+      throw "Recupera el archivo .env.prod original o confirma el reinicio de la base."
+    }
+  }
+}
+
+if ($reuseConfig) {
+  $envValues = Read-EnvFile $EnvFile
+  if ($envValues.ContainsKey("WEB_PORT")) {
+    $webPort = $envValues["WEB_PORT"]
+  }
+  Write-Host "Se conserva .env.prod y la base de datos existente."
+}
+else {
+  $serverHost = Prompt-Value "Nombre del servidor para clientes LAN (ej. osiris.local)" "osiris.local"
+  $webPort = Prompt-Value "Puerto HTTP para frontend" "80"
+  $postgresUser = Prompt-Value "POSTGRES_USER" "osiris"
+  $postgresPassword = Prompt-SafePassword "POSTGRES_PASSWORD"
+  $postgresDb = Prompt-Value "POSTGRES_DB" "osiris_inventario"
+  $secretDefault = New-RandomSecret
+  $secretKey = Prompt-Value "SECRET_KEY" $secretDefault
+  $accessMinutes = Prompt-Value "ACCESS_TOKEN_EXPIRE_MINUTES" "30"
+  $refreshDays = Prompt-Value "REFRESH_TOKEN_EXPIRE_DAYS" "7"
+  $kardexMethod = Prompt-Value "KARDEX_METHOD (PEPS o WEIGHTED_AVERAGE)" "PEPS"
+  $maxRangeDays = Prompt-Value "MAX_EXPORT_DATE_RANGE_DAYS" "90"
+  $timeZone = Prompt-Value "APP_TIMEZONE" "America/Guayaquil"
+  $corsOrigins = Prompt-Value "CORS_ORIGINS (JSON array)" "[\"http://$serverHost\",\"http://localhost\"]"
+
+  $envContent = @"
 POSTGRES_USER=$postgresUser
 POSTGRES_PASSWORD=$postgresPassword
 POSTGRES_DB=$postgresDb
@@ -219,11 +294,19 @@ CORS_ORIGINS=$corsOrigins
 WEB_PORT=$webPort
 "@
 
-[System.IO.File]::WriteAllText($EnvFile, $envContent, (New-Object System.Text.UTF8Encoding($false)))
-Write-Host "Se genero $EnvFile"
+  [System.IO.File]::WriteAllText($EnvFile, $envContent, (New-Object System.Text.UTF8Encoding($false)))
+  Write-Host "Se genero $EnvFile"
+}
 
 Write-Host "Levantando OSIRIS produccion (postgres + redis + api + web/nginx)..."
 docker compose --env-file $EnvFile -f $ComposeFile up -d --build
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "El despliegue fallo. Estado de servicios:" -ForegroundColor Red
+  docker compose --env-file $EnvFile -f $ComposeFile ps
+  Write-Host "Ultimos logs de la API:" -ForegroundColor Red
+  docker compose --env-file $EnvFile -f $ComposeFile logs --no-color --tail 150 api
+  throw "No se pudo iniciar el stack de produccion."
+}
 
 Write-Host "Esperando servicio web en http://localhost:$webPort/health ..."
 $ready = $false
@@ -241,9 +324,9 @@ for ($i = 0; $i -lt 90; $i++) {
 }
 
 if (-not $ready) {
-  Write-Host "El servicio no quedo listo a tiempo. Revisa logs con:"
-  Write-Host "docker compose --env-file .env.prod -f docker-compose.prod.yml logs"
-  exit 1
+  Write-Host "El servicio no quedo listo a tiempo. Ultimos logs de la API:" -ForegroundColor Red
+  docker compose --env-file $EnvFile -f $ComposeFile logs --no-color --tail 150 api
+  throw "Healthcheck sin respuesta."
 }
 
 Write-Host "Instalacion lista."

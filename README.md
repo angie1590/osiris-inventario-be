@@ -238,6 +238,8 @@ Importante: para este modo se necesita acceso a internet y URLs Git validas de a
 
 Si Docker Desktop requiere cerrar sesion o reiniciar Windows, ejecuta nuevamente el mismo BAT. El instalador reutiliza repositorios completos y reemplaza automaticamente clones incompletos; no es necesario borrar `C:\OsirisDeploy` manualmente.
 
+Si ya existe `.env.prod`, el instalador ofrece reutilizarlo. Acepta esa opcion para conservar la contraseña y los datos. Si eliges reconfigurar, exige confirmacion antes de eliminar el volumen PostgreSQL.
+
 El despliegue actual conserva el codigo fuente en `C:\OsirisDeploy` porque Docker construye las imagenes localmente y el actualizador usa Git. Los contenedores no leen directamente esos archivos durante la ejecucion, pero se necesitan para reconstruir y actualizar el sistema. Para eliminar el codigo fuente del servidor haria falta publicar imagenes preconstruidas en un registro como GitHub Container Registry.
 
 ### Actualizar una instalacion existente (Windows)
