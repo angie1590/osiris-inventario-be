@@ -10,11 +10,4 @@ if not exist "%PS_SCRIPT%" (
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_SCRIPT%" %*
-set "EXIT_CODE=%ERRORLEVEL%"
-
-if not "%EXIT_CODE%"=="0" (
-  echo Migracion finalizo con error (%EXIT_CODE%).
-  exit /b %EXIT_CODE%
-)
-
-exit /b 0
+exit /b %ERRORLEVEL%

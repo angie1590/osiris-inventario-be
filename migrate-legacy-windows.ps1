@@ -104,7 +104,7 @@ try {
     Write-Host ""
     Write-Host "La migracion exige una base sin categorias, productos, proveedores ni documentos de inventario."
     $Confirmation = Read-Host "Escribe MIGRAR para generar respaldo y aplicar la migracion"
-    if ($Confirmation -cne "MIGRAR") {
+    if ($Confirmation -ne "MIGRAR") {
       Write-Host "Operacion cancelada."
       exit 0
     }
