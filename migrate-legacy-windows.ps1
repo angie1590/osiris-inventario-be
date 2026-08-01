@@ -3,6 +3,7 @@ param(
   [string]$Actor = "admin",
   [string]$ReportDir = "migration-reports",
   [switch]$DryRunOnly,
+  [switch]$FlattenShoeExisting,
   [switch]$SkipBuild,
   [switch]$Yes
 )
@@ -48,7 +49,9 @@ Assert-Path $ComposeFile "No se encontro docker-compose.prod.yml en $BackendDir"
 Assert-Path $EnvFile "No se encontro .env.prod. Ejecuta install-windows.ps1 primero."
 Assert-Path $MigrationScript "No se encontro scripts\migrate_legacy_dump.py. Actualiza el backend."
 Assert-Path $BackupScript "No se encontro backup-db.ps1."
-Assert-Path $DumpFile "No se encontro el dump: $DumpFile"
+if (-not $FlattenShoeExisting) {
+  Assert-Path $DumpFile "No se encontro el dump: $DumpFile"
+}
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
   throw "Docker no esta disponible."
@@ -78,6 +81,39 @@ try {
   Assert-LastExitCode "No se pudo consultar el contenedor API."
   if ([string]::IsNullOrWhiteSpace($ContainerId)) {
     throw "No se encontro el contenedor API en ejecucion."
+  }
+
+  if ($FlattenShoeExisting) {
+    Write-Host ""
+    Write-Host "Simulando aplanado de ZAPATO en la base existente..."
+    docker compose --env-file $EnvFile -f $ComposeFile exec -T api `
+      python -m scripts.migrate_legacy_dump --flatten-shoe-existing
+    Assert-LastExitCode "No se pudo validar el aplanado de ZAPATO."
+
+    if ($DryRunOnly) {
+      Write-Host "Dry-run completado. No se modifico la base de datos."
+      exit 0
+    }
+
+    if (-not $Yes) {
+      $Confirmation = Read-Host "Escribe APLANAR para generar respaldo y aplicar la correccion"
+      if ($Confirmation -ne "APLANAR") {
+        Write-Host "Operacion cancelada."
+        exit 0
+      }
+    }
+
+    Write-Host "Generando respaldo previo..."
+    & $BackupScript -BackupDir $BackupDirectory
+
+    Write-Host "Aplicando aplanado de ZAPATO..."
+    docker compose --env-file $EnvFile -f $ComposeFile exec -T api `
+      python -m scripts.migrate_legacy_dump --flatten-shoe-existing --apply
+    Assert-LastExitCode "No se pudo aplanar ZAPATO."
+
+    Write-Host "ZAPATO fue corregida en la base existente."
+    Write-Host "Respaldos: $BackupDirectory"
+    exit 0
   }
 
   Write-Host "Copiando dump al contenedor..."
