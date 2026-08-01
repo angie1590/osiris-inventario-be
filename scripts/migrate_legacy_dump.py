@@ -36,6 +36,7 @@ class MigrationPlan:
     empty_attribute_rows: list[list[Any]]
     conflicting_attributes: dict[int, dict[str, list[str]]]
     reactivated_category_ids: set[int]
+    flattened_category_parents: dict[int, int]
 
 
 def _parse_tuple(blob: bytes) -> list[Any]:
@@ -223,6 +224,14 @@ def build_plan(path: Path) -> MigrationPlan:
         product_attributes[product_id] = mapped
 
     initial_stock = [row for row in products if Decimal(str(row[13] or 0)) > 0]
+    categories_by_id = {row[0]: row for row in tables["categoria"]}
+    flattened_category_parents = {
+        row[0]: row[3]
+        for row in tables["categoria"]
+        if row[3] is not None
+        and str(row[1]).strip().upper() == "MOCASIN"
+        and str(categories_by_id[row[3]][1]).strip().upper() == "ZAPATO"
+    }
     category_parents = {row[0]: row[3] for row in tables["categoria"]}
     required_active_categories = {
         row[15] for row in products if row[12] == "\x01"
@@ -250,6 +259,7 @@ def build_plan(path: Path) -> MigrationPlan:
         empty_attribute_rows=empty_attribute_rows,
         conflicting_attributes=conflicting_attributes,
         reactivated_category_ids=reactivated_category_ids,
+        flattened_category_parents=flattened_category_parents,
     )
 
 
@@ -267,6 +277,7 @@ def print_summary(plan: MigrationPlan) -> None:
     print(f"Valores de atributo vacios: {len(plan.empty_attribute_rows)}")
     print(f"Productos con atributos conflictivos: {len(plan.conflicting_attributes)}")
     print(f"Categorias reactivadas por productos activos: {len(plan.reactivated_category_ids)}")
+    print(f"Categorias aplanadas en su padre: {len(plan.flattened_category_parents)}")
     print(f"Lineas de saldo inicial: {len(plan.initial_stock)}")
     print(f"Unidades de saldo inicial: {stock_units}")
     print(f"Valor de saldo inicial al 65% del PVP: {stock_value.quantize(Decimal('0.01'))}")
@@ -294,6 +305,7 @@ def _report(plan: MigrationPlan) -> dict[str, Any]:
             "migrated_suppliers": len(plan.suppliers),
             "initial_stock_lines": len(plan.initial_stock),
             "reactivated_categories": len(plan.reactivated_category_ids),
+            "flattened_categories": len(plan.flattened_category_parents),
         },
         "excluded_products": [
             {"id": product_id, "name": products_by_id[product_id][1], "barcode": products_by_id[product_id][2]}
@@ -309,6 +321,7 @@ def _report(plan: MigrationPlan) -> dict[str, Any]:
             "conflicts": plan.conflicting_attributes,
         },
         "reactivated_category_ids": sorted(plan.reactivated_category_ids),
+        "flattened_category_parents": plan.flattened_category_parents,
         "negative_stock_normalized": [
             {"id": row[0], "name": row[1], "barcode": row[2], "source_stock": str(row[13])}
             for row in plan.products
@@ -363,7 +376,7 @@ async def apply_plan(plan: MigrationPlan, actor: str, session_factory: Any = Non
                     category_map[row[0]] = category
             await session.flush()
             for row in source_categories:
-                if row[3] is not None:
+                if row[3] is not None and row[0] not in plan.flattened_category_parents:
                     category = Category(
                         name=str(row[1]).strip(),
                         parent_id=category_map[row[3]].id,
@@ -373,8 +386,14 @@ async def apply_plan(plan: MigrationPlan, actor: str, session_factory: Any = Non
                     category_map[row[0]] = category
             await session.flush()
 
-            source_parent_ids = {row[3] for row in source_categories if row[3] is not None}
+            source_parent_ids = {
+                row[3]
+                for row in source_categories
+                if row[3] is not None and row[0] not in plan.flattened_category_parents
+            }
             product_category_map = {category_id: category for category_id, category in category_map.items()}
+            for category_id, parent_id in plan.flattened_category_parents.items():
+                product_category_map[category_id] = category_map[parent_id]
             for source_parent_id in source_parent_ids:
                 if any(product[15] == source_parent_id for product in plan.products):
                     default = Category(
@@ -508,13 +527,87 @@ async def _kardex_method(session: Any) -> str:
     return param.value if param else "PEPS"
 
 
+async def flatten_existing_shoe_category(apply: bool = False, session_factory: Any = None) -> None:
+    from sqlalchemy import delete, func, select, update
+
+    from app.core.database import AsyncSessionLocal
+    from app.models.category import Category, CategoryAttribute
+    from app.models.product import Product
+
+    factory = session_factory or AsyncSessionLocal
+    async with factory() as session:
+        shoe = await session.scalar(
+            select(Category).where(
+                func.upper(Category.name) == "ZAPATO", Category.parent_id.is_(None)
+            )
+        )
+        if not shoe:
+            raise ValueError("No se encontro la categoria raiz ZAPATO")
+
+        children = list(
+            (
+                await session.scalars(
+                    select(Category).where(
+                        Category.parent_id == shoe.id,
+                        func.upper(Category.name).in_(["MOCASIN", "SIN CLASIFICAR"]),
+                    )
+                )
+            ).all()
+        )
+        child_ids = [category.id for category in children]
+        product_count = 0
+        if child_ids:
+            product_count = await session.scalar(
+                select(func.count()).select_from(Product).where(Product.category_id.in_(child_ids))
+            )
+
+        print(f"Categorias a eliminar: {', '.join(category.name for category in children) or 'ninguna'}")
+        print(f"Productos a mover a ZAPATO: {product_count}")
+        if not apply or not child_ids:
+            print("Sin cambios." if not apply else "ZAPATO ya esta aplanada.")
+            return
+
+        existing_names = set(
+            await session.scalars(
+                select(CategoryAttribute.name).where(CategoryAttribute.category_id == shoe.id)
+            )
+        )
+        child_attributes = list(
+            (
+                await session.scalars(
+                    select(CategoryAttribute).where(CategoryAttribute.category_id.in_(child_ids))
+                )
+            ).all()
+        )
+        for attribute in child_attributes:
+            if attribute.name not in existing_names:
+                attribute.category_id = shoe.id
+                existing_names.add(attribute.name)
+
+        await session.execute(update(Product).where(Product.category_id.in_(child_ids)).values(category_id=shoe.id))
+        await session.execute(delete(Category).where(Category.id.in_(child_ids)))
+        await session.commit()
+        print("ZAPATO aplanada correctamente.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Migra el dump MySQL legado a Osiris")
-    parser.add_argument("dump", type=Path)
+    parser.add_argument("dump", type=Path, nargs="?")
     parser.add_argument("--apply", action="store_true", help="Aplica el plan a la base configurada")
+    parser.add_argument(
+        "--flatten-shoe-existing",
+        action="store_true",
+        help="Aplana ZAPATO en una base ya migrada; usa --apply para confirmar",
+    )
     parser.add_argument("--actor", default="admin", help="Usuario que registra la migracion")
     parser.add_argument("--report", type=Path, default=Path("migration-report.json"), help="Ruta del reporte detallado JSON")
     args = parser.parse_args()
+
+    if args.flatten_shoe_existing:
+        asyncio.run(flatten_existing_shoe_category(args.apply))
+        return
+    if args.dump is None:
+        parser.error("dump es obligatorio salvo con --flatten-shoe-existing")
 
     plan = build_plan(args.dump)
     print_summary(plan)

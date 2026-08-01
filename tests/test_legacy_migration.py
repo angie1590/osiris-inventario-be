@@ -6,12 +6,18 @@ import pytest
 from sqlalchemy import func, select
 
 from app.core.security import hash_password
-from app.models.enums import DocumentStatus, ProductStatus, UserRole
+from app.models.category import Category, CategoryAttribute
+from app.models.enums import AttributeDataType, DocumentStatus, ProductStatus, UserRole
 from app.models.inventory import InventoryDocument, InventoryDocumentLine, InventorySupplier
 from app.models.kardex import InventoryLot, KardexEntry
 from app.models.product import Product
 from app.models.user import User
-from scripts.migrate_legacy_dump import apply_plan, build_plan, initial_unit_cost
+from scripts.migrate_legacy_dump import (
+    apply_plan,
+    build_plan,
+    flatten_existing_shoe_category,
+    initial_unit_cost,
+)
 from tests.conftest import TestSessionLocal
 
 
@@ -95,6 +101,25 @@ def _dump(tmp_path):
     return dump
 
 
+def _dump_with_shoe_child(tmp_path):
+    dump = tmp_path / "legacy-shoes.sql"
+    dump.write_text(
+        "".join(
+            (
+                _insert("categoria", [(1, "ZAPATO", "\x01", None), (2, "MOCASIN", "\x01", 1)]),
+                _insert("tipo_de_producto", [(1, "ZAPATO", "\x01")]),
+                _insert("atributo", [(1, "TALLA", "\x01", None, 1)]),
+                _insert("atributo_descripcion", [(1, "40", "\x01", 1, 1), (2, "41", "\x01", 1, 2)]),
+                _insert("proveedor", [(1, "1890010667001", "A", "1234567", None, None, "VALIDO", "VALIDO", None, "\x01", None, 1)]),
+                _insert("producto", [_product(1, "ZAPATO-1", 20, 1), _product(2, "MOCASIN-1", 20, 1, category_id=2)]),
+            )
+        ),
+        encoding="utf-8",
+        newline="",
+    )
+    return dump
+
+
 def test_build_plan_applies_migration_rules(tmp_path):
     dump = _dump(tmp_path)
 
@@ -114,6 +139,70 @@ def test_build_plan_applies_migration_rules(tmp_path):
 def test_initial_unit_cost_is_65_percent_rounded_to_cents():
     assert initial_unit_cost(20) == Decimal("13.00")
     assert initial_unit_cost(19.99) == Decimal("12.99")
+
+
+async def test_apply_plan_flattens_mocasin_into_zapato(tmp_path):
+    async with TestSessionLocal() as session:
+        session.add(User(username="admin", hashed_password=hash_password("Admin@12345!"), full_name="Administrador", role=UserRole.admin, is_active=True))
+        await session.commit()
+
+    plan = build_plan(_dump_with_shoe_child(tmp_path))
+    assert plan.flattened_category_parents == {2: 1}
+    await apply_plan(plan, "admin", TestSessionLocal)
+
+    async with TestSessionLocal() as session:
+        categories = list((await session.execute(select(Category))).scalars())
+        assert [(category.name, category.parent_id) for category in categories] == [("ZAPATO", None)]
+        products = list((await session.execute(select(Product).order_by(Product.isbn))).scalars())
+        assert {product.category_id for product in products} == {categories[0].id}
+
+
+async def test_flatten_existing_shoe_category_moves_products_and_attributes():
+    async with TestSessionLocal() as session:
+        shoe = Category(name="ZAPATO")
+        session.add(shoe)
+        await session.flush()
+        mocasin = Category(name="MOCASIN", parent_id=shoe.id)
+        default = Category(name="Sin clasificar", parent_id=shoe.id, is_default=True)
+        session.add_all([mocasin, default])
+        await session.flush()
+        session.add_all(
+            [
+                CategoryAttribute(
+                    category_id=mocasin.id,
+                    name="TALLA",
+                    data_type=AttributeDataType.text,
+                ),
+                Product(
+                    isbn="MOCASIN-1",
+                    name="MOCASIN 1",
+                    category_id=mocasin.id,
+                    stock_minimo=0,
+                    stock_actual=0,
+                    pvp=20,
+                ),
+                Product(
+                    isbn="ZAPATO-1",
+                    name="ZAPATO 1",
+                    category_id=default.id,
+                    stock_minimo=0,
+                    stock_actual=0,
+                    pvp=20,
+                ),
+            ]
+        )
+        await session.commit()
+
+    await flatten_existing_shoe_category(True, TestSessionLocal)
+    await flatten_existing_shoe_category(True, TestSessionLocal)
+
+    async with TestSessionLocal() as session:
+        categories = list((await session.execute(select(Category))).scalars())
+        assert [(category.name, category.parent_id) for category in categories] == [("ZAPATO", None)]
+        products = list((await session.execute(select(Product))).scalars())
+        assert {product.category_id for product in products} == {categories[0].id}
+        attribute = (await session.execute(select(CategoryAttribute))).scalar_one()
+        assert (attribute.name, attribute.category_id) == ("TALLA", categories[0].id)
 
 
 async def test_apply_plan_creates_initial_inventory(tmp_path):

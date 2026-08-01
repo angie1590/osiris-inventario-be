@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, File, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
@@ -50,6 +51,22 @@ _operator_up = require_role(UserRole.admin, UserRole.operator)
 _admin_only = require_role(UserRole.admin)
 _approver_roles = require_role(UserRole.admin, UserRole.supervisor)
 _read_roles = require_role(UserRole.admin, UserRole.operator, UserRole.supervisor)
+
+
+def _parse_document_date_bound(value: str | None, *, end_of_day: bool) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if "T" not in raw and " " not in raw:
+        local_date = date.fromisoformat(raw)
+        local_datetime = datetime.combine(
+            local_date,
+            time.max if end_of_day else time.min,
+            tzinfo=ZoneInfo(settings.APP_TIMEZONE),
+        )
+        return local_datetime.astimezone(timezone.utc)
+    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 # --- Conteos ---
@@ -448,8 +465,8 @@ async def delete_supplier(
 
 @router.get("/ingresos", response_model=list[DocumentResponse])
 async def list_ingresos(
-    date_from: datetime | None = None,
-    date_to: datetime | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     product_id: int | None = None,
     created_by: int | None = None,
     type_: str | None = Query(None, alias="type"),
@@ -459,10 +476,21 @@ async def list_ingresos(
     _: User = Depends(_read_roles),
 ):
     repo = InventoryRepository(db)
+    try:
+        date_from_dt = _parse_document_date_bound(date_from, end_of_day=False)
+        date_to_dt = _parse_document_date_bound(date_to, end_of_day=True)
+    except ValueError:
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime"
+        )
+    if date_from_dt and date_to_dt and date_from_dt > date_to_dt:
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "date_from must be before date_to"
+        )
     return await repo.list(
         DocumentType.IN,
-        date_from,
-        date_to,
+        date_from_dt,
+        date_to_dt,
         product_id,
         created_by,
         type_,
