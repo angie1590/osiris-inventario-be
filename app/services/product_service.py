@@ -220,6 +220,34 @@ class ProductService:
         )
         return products
 
+    async def list_products_page(
+        self,
+        page: int,
+        page_size: int,
+        name: str | None = None,
+        category_id: int | None = None,
+        include_descendants: bool = True,
+        status: ProductStatus | None = None,
+        bajo_stock: bool | None = None,
+        stock_desc: bool = False,
+    ) -> tuple[list[Product], int]:
+        category_ids = None
+        if category_id:
+            category_ids = (
+                await self.cat_repo.get_descendant_category_ids(category_id)
+                if include_descendants
+                else [category_id]
+            )
+        return await self.repo.list_page(
+            page=page,
+            page_size=page_size,
+            name=name,
+            category_ids=category_ids,
+            status=status,
+            bajo_stock=bajo_stock,
+            stock_desc=stock_desc,
+        )
+
     async def create_product(
         self,
         isbn: str | None,

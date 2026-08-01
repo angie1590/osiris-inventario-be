@@ -191,6 +191,34 @@ async def test_list_products_orders_by_stock_desc_with_stable_cursor(
 
 
 @pytest.mark.asyncio
+async def test_list_products_page_returns_total_and_numbered_page(
+    client: AsyncClient, admin_token: str
+):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    category = await client.post(
+        "/api/v1/categories", json={"name": "Numbered Page Cat"}, headers=headers
+    )
+    category_id = category.json()["id"]
+    for name in ("Paged A", "Paged B", "Paged C"):
+        await client.post(
+            "/api/v1/products",
+            json={"name": name, "category_id": category_id, "pvp": "5.00"},
+            headers=headers,
+        )
+
+    response = await client.get(
+        "/api/v1/products/page?page=2&page_size=2&status=active&stock_desc=true",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 3
+    assert response.json()["page"] == 2
+    assert response.json()["page_size"] == 2
+    assert len(response.json()["items"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_list_products_can_exclude_descendants(
     client: AsyncClient, admin_token: str
 ):

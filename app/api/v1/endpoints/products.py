@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -7,6 +7,7 @@ from app.models.enums import ProductStatus, UserRole
 from app.models.user import User
 from app.schemas.product import (
     ProductCreate,
+    ProductPageResponse,
     ProductResponse,
     ProductStatusUpdate,
     ProductUpdate,
@@ -74,6 +75,37 @@ async def list_products(
         stock_desc=stock_desc,
     )
     return [_to_response(p) for p in products]
+
+
+@router.get("/page", response_model=ProductPageResponse)
+async def list_products_page(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    name: str | None = None,
+    category_id: int | None = None,
+    include_descendants: bool = True,
+    status: ProductStatus | None = None,
+    bajo_stock: bool | None = None,
+    stock_desc: bool = False,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    products, total = await ProductService(db).list_products_page(
+        page=page,
+        page_size=page_size,
+        name=name,
+        category_id=category_id,
+        include_descendants=include_descendants,
+        status=status,
+        bajo_stock=bajo_stock,
+        stock_desc=stock_desc,
+    )
+    return {
+        "items": [_to_response(product) for product in products],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.post("", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
