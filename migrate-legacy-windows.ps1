@@ -176,11 +176,18 @@ try {
     --actor $Actor --report $RemoteReport --apply
   Assert-LastExitCode "La migracion fallo. La base recreada quedo sin los datos del dump; usa el respaldo para restaurar si es necesario."
 
+  Write-Host "Restableciendo y verificando acceso del usuario admin..."
+  docker compose --env-file $EnvFile -f $ComposeFile exec -T api `
+    python -m scripts.reset_admin_password --password "Admin@12345!"
+  Assert-LastExitCode "La migracion termino, pero no se pudo restablecer la clave del usuario admin."
+
   docker cp "${ContainerId}:$RemoteReport" $FinalReport
   Assert-LastExitCode "La migracion termino, pero no se pudo copiar el reporte final."
 
   Write-Host ""
   Write-Host "Migracion completada."
+  Write-Host "Usuario temporal: admin"
+  Write-Host "Clave temporal: Admin@12345!"
   Write-Host "Reporte: $FinalReport"
   Write-Host "Respaldos: $BackupDirectory"
 }
