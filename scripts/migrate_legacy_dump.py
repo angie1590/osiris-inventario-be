@@ -338,7 +338,7 @@ def _report(plan: MigrationPlan) -> dict[str, Any]:
 
 
 async def apply_plan(plan: MigrationPlan, actor: str, session_factory: Any = None) -> None:
-    from sqlalchemy import func, select
+    from sqlalchemy import select, text
 
     from app.core.database import AsyncSessionLocal
     from app.models.catalog import Catalog, CatalogValue
@@ -359,10 +359,23 @@ async def apply_plan(plan: MigrationPlan, actor: str, session_factory: Any = Non
             if user is None:
                 raise ValueError(f"Usuario activo no encontrado: {actor}")
 
-            for model in (Category, Product, InventorySupplier, Catalog, InventoryDocument):
-                count = await session.scalar(select(func.count()).select_from(model))
-                if count:
-                    raise ValueError(f"La tabla {model.__tablename__} debe estar vacia")
+            await session.execute(
+                text(
+                    """
+                    TRUNCATE TABLE
+                        audit_logs,
+                        inventory_counts,
+                        inventory_documents,
+                        inventory_suppliers,
+                        products,
+                        categories,
+                        catalogs,
+                        document_sequences,
+                        count_sequences
+                    RESTART IDENTITY CASCADE
+                    """
+                )
+            )
 
             category_map: dict[int, Category] = {}
             source_categories = plan.tables["categoria"]
@@ -527,87 +540,13 @@ async def _kardex_method(session: Any) -> str:
     return param.value if param else "PEPS"
 
 
-async def flatten_existing_shoe_category(apply: bool = False, session_factory: Any = None) -> None:
-    from sqlalchemy import delete, func, select, update
-
-    from app.core.database import AsyncSessionLocal
-    from app.models.category import Category, CategoryAttribute
-    from app.models.product import Product
-
-    factory = session_factory or AsyncSessionLocal
-    async with factory() as session:
-        shoe = await session.scalar(
-            select(Category).where(
-                func.upper(Category.name) == "ZAPATO", Category.parent_id.is_(None)
-            )
-        )
-        if not shoe:
-            raise ValueError("No se encontro la categoria raiz ZAPATO")
-
-        children = list(
-            (
-                await session.scalars(
-                    select(Category).where(
-                        Category.parent_id == shoe.id,
-                        func.upper(Category.name).in_(["MOCASIN", "SIN CLASIFICAR"]),
-                    )
-                )
-            ).all()
-        )
-        child_ids = [category.id for category in children]
-        product_count = 0
-        if child_ids:
-            product_count = await session.scalar(
-                select(func.count()).select_from(Product).where(Product.category_id.in_(child_ids))
-            )
-
-        print(f"Categorias a eliminar: {', '.join(category.name for category in children) or 'ninguna'}")
-        print(f"Productos a mover a ZAPATO: {product_count}")
-        if not apply or not child_ids:
-            print("Sin cambios." if not apply else "ZAPATO ya esta aplanada.")
-            return
-
-        existing_names = set(
-            await session.scalars(
-                select(CategoryAttribute.name).where(CategoryAttribute.category_id == shoe.id)
-            )
-        )
-        child_attributes = list(
-            (
-                await session.scalars(
-                    select(CategoryAttribute).where(CategoryAttribute.category_id.in_(child_ids))
-                )
-            ).all()
-        )
-        for attribute in child_attributes:
-            if attribute.name not in existing_names:
-                attribute.category_id = shoe.id
-                existing_names.add(attribute.name)
-
-        await session.execute(update(Product).where(Product.category_id.in_(child_ids)).values(category_id=shoe.id))
-        await session.execute(delete(Category).where(Category.id.in_(child_ids)))
-        await session.commit()
-        print("ZAPATO aplanada correctamente.")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Migra el dump MySQL legado a Osiris")
-    parser.add_argument("dump", type=Path, nargs="?")
-    parser.add_argument("--apply", action="store_true", help="Aplica el plan a la base configurada")
-    parser.add_argument(
-        "--flatten-shoe-existing",
-        action="store_true",
-        help="Aplana ZAPATO en una base ya migrada; usa --apply para confirmar",
-    )
+    parser.add_argument("dump", type=Path)
+    parser.add_argument("--apply", action="store_true", help="Reemplaza los datos existentes y aplica el plan")
     parser.add_argument("--actor", default="admin", help="Usuario que registra la migracion")
     parser.add_argument("--report", type=Path, default=Path("migration-report.json"), help="Ruta del reporte detallado JSON")
     args = parser.parse_args()
-
-    if args.flatten_shoe_existing:
-        asyncio.run(flatten_existing_shoe_category(args.apply))
-        return
-    if args.dump is None:
-        parser.error("dump es obligatorio salvo con --flatten-shoe-existing")
 
     plan = build_plan(args.dump)
     print_summary(plan)

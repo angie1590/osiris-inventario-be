@@ -3,7 +3,6 @@ param(
   [string]$Actor = "admin",
   [string]$ReportDir = "migration-reports",
   [switch]$DryRunOnly,
-  [switch]$FlattenShoeExisting,
   [switch]$SkipBuild,
   [switch]$Yes
 )
@@ -35,6 +34,21 @@ function Assert-LastExitCode($Message) {
   }
 }
 
+function Read-EnvFile($Path) {
+  $Values = @{}
+  Get-Content $Path | ForEach-Object {
+    $Line = $_.Trim()
+    if (-not $Line -or $Line.StartsWith("#")) {
+      return
+    }
+    $Parts = $Line.Split("=", 2)
+    if ($Parts.Count -eq 2) {
+      $Values[$Parts[0]] = $Parts[1]
+    }
+  }
+  return $Values
+}
+
 $DumpFile = Resolve-LocalPath $DumpPath $BackendDir
 $ReportDirectory = Resolve-LocalPath $ReportDir $BackendDir
 $BackupDirectory = Join-Path $BackendDir "backups"
@@ -49,8 +63,21 @@ Assert-Path $ComposeFile "No se encontro docker-compose.prod.yml en $BackendDir"
 Assert-Path $EnvFile "No se encontro .env.prod. Ejecuta install-windows.ps1 primero."
 Assert-Path $MigrationScript "No se encontro scripts\migrate_legacy_dump.py. Actualiza el backend."
 Assert-Path $BackupScript "No se encontro backup-db.ps1."
-if (-not $FlattenShoeExisting) {
-  Assert-Path $DumpFile "No se encontro el dump: $DumpFile"
+Assert-Path $DumpFile "No se encontro el dump: $DumpFile"
+
+if ($Actor -ne "admin") {
+  throw "Al recrear la base solo existe el usuario inicial 'admin'. No uses -Actor con otro valor."
+}
+
+$EnvValues = Read-EnvFile $EnvFile
+$PostgresUser = $EnvValues["POSTGRES_USER"]
+$PostgresDb = $EnvValues["POSTGRES_DB"]
+
+if ([string]::IsNullOrWhiteSpace($PostgresUser)) {
+  $PostgresUser = "osiris"
+}
+if ([string]::IsNullOrWhiteSpace($PostgresDb)) {
+  $PostgresDb = "osiris_inventario"
 }
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
@@ -83,39 +110,6 @@ try {
     throw "No se encontro el contenedor API en ejecucion."
   }
 
-  if ($FlattenShoeExisting) {
-    Write-Host ""
-    Write-Host "Simulando aplanado de ZAPATO en la base existente..."
-    docker compose --env-file $EnvFile -f $ComposeFile exec -T api `
-      python -m scripts.migrate_legacy_dump --flatten-shoe-existing
-    Assert-LastExitCode "No se pudo validar el aplanado de ZAPATO."
-
-    if ($DryRunOnly) {
-      Write-Host "Dry-run completado. No se modifico la base de datos."
-      exit 0
-    }
-
-    if (-not $Yes) {
-      $Confirmation = Read-Host "Escribe APLANAR para generar respaldo y aplicar la correccion"
-      if ($Confirmation -ne "APLANAR") {
-        Write-Host "Operacion cancelada."
-        exit 0
-      }
-    }
-
-    Write-Host "Generando respaldo previo..."
-    & $BackupScript -BackupDir $BackupDirectory
-
-    Write-Host "Aplicando aplanado de ZAPATO..."
-    docker compose --env-file $EnvFile -f $ComposeFile exec -T api `
-      python -m scripts.migrate_legacy_dump --flatten-shoe-existing --apply
-    Assert-LastExitCode "No se pudo aplanar ZAPATO."
-
-    Write-Host "ZAPATO fue corregida en la base existente."
-    Write-Host "Respaldos: $BackupDirectory"
-    exit 0
-  }
-
   Write-Host "Copiando dump al contenedor..."
   docker cp $DumpFile "${ContainerId}:$RemoteDump"
   Assert-LastExitCode "No se pudo copiar el dump al contenedor."
@@ -138,8 +132,9 @@ try {
 
   if (-not $Yes) {
     Write-Host ""
-    Write-Host "La migracion exige una base sin categorias, productos, proveedores ni documentos de inventario."
-    $Confirmation = Read-Host "Escribe MIGRAR para generar respaldo y aplicar la migracion"
+    Write-Host "La base PostgreSQL '$PostgresDb' sera eliminada y creada nuevamente."
+    Write-Host "Se perderan todos sus datos actuales. Se generara un respaldo antes de borrarla."
+    $Confirmation = Read-Host "Escribe MIGRAR para respaldar, recrear la base y cargar el dump"
     if ($Confirmation -ne "MIGRAR") {
       Write-Host "Operacion cancelada."
       exit 0
@@ -150,11 +145,36 @@ try {
   & $BackupScript -BackupDir $BackupDirectory
 
   Write-Host ""
-  Write-Host "Aplicando migracion..."
+  Write-Host "Deteniendo API..."
+  docker compose --env-file $EnvFile -f $ComposeFile stop api
+  Assert-LastExitCode "No se pudo detener la API."
+
+  Write-Host "Eliminando base PostgreSQL '$PostgresDb'..."
+  docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
+    dropdb --if-exists --force -U $PostgresUser $PostgresDb
+  Assert-LastExitCode "No se pudo eliminar la base PostgreSQL."
+
+  Write-Host "Creando base PostgreSQL '$PostgresDb'..."
+  docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
+    createdb -U $PostgresUser $PostgresDb
+  Assert-LastExitCode "No se pudo crear la base PostgreSQL."
+
+  Write-Host "Recreando esquema y datos iniciales..."
+  docker compose --env-file $EnvFile -f $ComposeFile up -d --wait --wait-timeout 120 api
+  Assert-LastExitCode "No se pudo recrear el esquema de la base."
+
+  $ContainerId = (docker compose --env-file $EnvFile -f $ComposeFile ps -q api).Trim()
+  Assert-LastExitCode "No se pudo consultar el nuevo contenedor API."
+
+  Write-Host "Copiando nuevamente el dump al contenedor recreado..."
+  docker cp $DumpFile "${ContainerId}:$RemoteDump"
+  Assert-LastExitCode "No se pudo copiar el dump al contenedor recreado."
+
+  Write-Host "Aplicando migracion completa con ZAPATO aplanada..."
   docker compose --env-file $EnvFile -f $ComposeFile exec -T api `
     python -m scripts.migrate_legacy_dump $RemoteDump `
     --actor $Actor --report $RemoteReport --apply
-  Assert-LastExitCode "La migracion fallo. La transaccion fue revertida."
+  Assert-LastExitCode "La migracion fallo. La base recreada quedo sin los datos del dump; usa el respaldo para restaurar si es necesario."
 
   docker cp "${ContainerId}:$RemoteReport" $FinalReport
   Assert-LastExitCode "La migracion termino, pero no se pudo copiar el reporte final."
