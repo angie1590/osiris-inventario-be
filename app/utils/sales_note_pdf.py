@@ -26,7 +26,9 @@ def build_sales_note_pdf(document) -> bytes:
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=(110 * mm, 160 * mm))
     customer = _customer_data(document.notes)
-    document_date = document.purchase_document_date or document.created_at
+    document_date = document.purchase_document_date
+    if document_date is None:
+        raise ValueError("Sales note document date is required")
     lines = list(document.lines)
     total = sum(
         (line.quantity * line.unit_price for line in lines),
