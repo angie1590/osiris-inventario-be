@@ -588,6 +588,15 @@ class InventoryService:
             raise ValidationAppError(
                 "DOCUMENT_REQUIRES_LINES", "Document must have at least one line"
             )
+        if (
+            egreso_type == "sale"
+            and purchase_document_type == "sales_note"
+            and len(lines_data) > 9
+        ):
+            raise ValidationAppError(
+                "SALES_NOTE_LINE_LIMIT",
+                "La Nota de Venta admite máximo 9 productos",
+            )
 
         await self._validate_products_active(lines_data)
         await self._validate_quantity_mode(lines_data)

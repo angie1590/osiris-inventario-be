@@ -1,0 +1,63 @@
+from decimal import Decimal
+from io import BytesIO
+
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+
+
+def _customer_data(notes: str | None) -> dict[str, str]:
+    values = {}
+    for part in (notes or "").split("|"):
+        label, _, value = part.partition(":")
+        values[label.strip()] = value.strip()
+    return {
+        "name": values.get("Nombre", "CONSUMIDOR FINAL"),
+        "ruc": values.get("RUC", ""),
+        "phone": values.get("Teléfono", ""),
+        "address": values.get("Dirección", ""),
+    }
+
+
+def _quantity(value: Decimal) -> str:
+    return format(value.normalize(), "f")
+
+
+def build_sales_note_pdf(document) -> bytes:
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=(110 * mm, 160 * mm))
+    customer = _customer_data(document.notes)
+    document_date = document.purchase_document_date or document.created_at
+    lines = list(document.lines)
+    total = sum(
+        (line.quantity * line.unit_price for line in lines),
+        start=Decimal("0"),
+    )
+
+    for page_start in range(0, len(lines), 9):
+        page_lines = lines[page_start : page_start + 9]
+        pdf.setFont("Helvetica", 8)
+        pdf.drawString(20 * mm, 115 * mm, document_date.strftime("%d/%m/%Y"))
+        pdf.drawString(20 * mm, 109 * mm, customer["name"][:60])
+        pdf.drawString(20 * mm, 102.5 * mm, customer["ruc"][:30])
+        pdf.drawString(76 * mm, 102.5 * mm, customer["phone"][:20])
+        pdf.drawString(20 * mm, 96 * mm, customer["address"][:70])
+
+        for index, line in enumerate(page_lines):
+            y = (82 - index * 5.8) * mm
+            unit_price = line.unit_price or Decimal("0")
+            pdf.drawCentredString(15 * mm, y, _quantity(line.quantity))
+            pdf.drawString(22 * mm, y, (line.product_name or "")[:42])
+            pdf.drawRightString(86 * mm, y, f"{unit_price:.2f}")
+            pdf.drawRightString(101 * mm, y, f"{line.quantity * unit_price:.2f}")
+
+        if page_start + 9 >= len(lines):
+            seller_name = (document.seller_name or "").strip()
+            if seller_name:
+                pdf.setFont("Helvetica", 7)
+                pdf.drawCentredString(50 * mm, 20 * mm, seller_name[:30])
+            pdf.setFont("Helvetica-Bold", 8)
+            pdf.drawRightString(101 * mm, 31 * mm, f"{total:.2f}")
+        pdf.showPage()
+
+    pdf.save()
+    return buffer.getvalue()

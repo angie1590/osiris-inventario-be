@@ -160,6 +160,29 @@ async def test_sale_allows_document_type_none(
 
 
 @pytest.mark.asyncio
+async def test_sales_note_rejects_more_than_nine_lines(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    resp = await client.post(
+        "/api/v1/inventory/egresos",
+        json={
+            "egreso_type": "sale",
+            "purchase_document_type": "sales_note",
+            "purchase_document_number": "NV-10-LINEAS",
+            "seller_name": "VENDEDOR TEST",
+            "lines": [
+                {"product_id": index, "quantity": "1", "unit_price": "1"}
+                for index in range(1, 11)
+            ],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "SALES_NOTE_LINE_LIMIT"
+
+
+@pytest.mark.asyncio
 async def test_sale_requires_document_number_when_document_is_not_none(
     client: AsyncClient, admin_token: str, operator_token: str
 ):

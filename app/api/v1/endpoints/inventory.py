@@ -4,7 +4,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, File, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -46,6 +46,7 @@ from app.schemas.inventory import (
 )
 from app.services.inventory_service import InventoryService
 from app.services.audit_service import AuditService
+from app.utils.sales_note_pdf import build_sales_note_pdf
 
 router = APIRouter()
 
@@ -634,8 +635,8 @@ async def list_egresos(
 
 @router.get("/egresos/page", response_model=DocumentPageResponse)
 async def list_egresos_page(
-    date_from: datetime | None = None,
-    date_to: datetime | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     product_id: int | None = None,
     created_by: int | None = None,
     type_: str | None = Query(None, alias="type"),
@@ -645,13 +646,22 @@ async def list_egresos_page(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(_read_roles),
 ):
+    try:
+        date_from_dt = _parse_document_date_bound(date_from, end_of_day=False)
+        date_to_dt = _parse_document_date_bound(date_to, end_of_day=True)
+    except ValueError:
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime"
+        )
+    if date_from_dt and date_to_dt and date_from_dt > date_to_dt:
+        raise ValidationAppError("INVALID_DATE_RANGE", "date_from must be before date_to")
     repo = InventoryRepository(db)
     items, total = await repo.list_page(
         DocumentType.EG,
         page,
         page_size,
-        date_from,
-        date_to,
+        date_from_dt,
+        date_to_dt,
         product_id,
         created_by,
         type_,
@@ -671,6 +681,28 @@ async def get_egreso(
     if not doc or doc.doc_type != DocumentType.EG:
         raise NotFoundError("DOCUMENT_NOT_FOUND", "Egreso not found")
     return doc
+
+
+@router.get("/egresos/{document_id}/print.pdf")
+async def print_egreso_sales_note(
+    document_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    repo = InventoryRepository(db)
+    doc = await repo.get_by_id(document_id)
+    if not doc or doc.doc_type != DocumentType.EG:
+        raise NotFoundError("DOCUMENT_NOT_FOUND", "Egreso not found")
+    if doc.egreso_type != "sale" or doc.purchase_document_type != "sales_note":
+        raise ValidationAppError(
+            "INVALID_SALES_NOTE",
+            "Document is not a sale with sales note",
+        )
+    return Response(
+        build_sales_note_pdf(doc),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{doc.number}.pdf"'},
+    )
 
 
 @router.post(

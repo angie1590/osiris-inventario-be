@@ -79,3 +79,35 @@ async def test_list_ingresos_page_returns_total_and_second_page(
     assert body["total_pages"] == 2
     assert body["page"] == 2
     assert len(body["items"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_egresos_page_includes_end_of_local_day(
+    client: AsyncClient, admin_token: str, db_session: AsyncSession
+):
+    user = await db_session.scalar(select(User).where(User.username == "test_admin"))
+    db_session.add(
+        InventoryDocument(
+            number="EG-2026-000001",
+            doc_type=DocumentType.EG,
+            status=DocumentStatus.approved,
+            ingreso_type="sale",
+            purchase_document_type="sales_note",
+            purchase_document_number="37",
+            seller_name="TEST SELLER",
+            created_by=user.id,
+            created_at=datetime(2026, 8, 1, 0, 30, tzinfo=timezone.utc),
+        )
+    )
+    await db_session.commit()
+
+    response = await client.get(
+        "/api/v1/inventory/egresos/page",
+        params={"date_from": "2026-07-31", "date_to": "2026-07-31", "page": 1},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["number"] == "EG-2026-000001"

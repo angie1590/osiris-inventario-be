@@ -901,12 +901,23 @@ async def report_stock(
 @router.get("/stock-valorizado")
 async def report_stock_valorizado(
     category_id: int | None = None,
-    as_of_date: datetime | None = None,
+    as_of_date: str | None = None,
     format: Literal["json", "pdf", "excel"] = "json",
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(_read_roles),
     _company: None = Depends(require_company_configured),
 ):
+    try:
+        as_of_date_dt = (
+            _parse_iso_datetime(as_of_date, end_of_day_for_date_only=True)[0]
+            if as_of_date
+            else None
+        )
+    except ValueError:
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "as_of_date must be a valid ISO date or datetime"
+        )
+
     result = await db.execute(
         select(SystemParam).where(SystemParam.key == "kardex_method")
     )
@@ -926,8 +937,8 @@ async def report_stock_valorizado(
     total = Decimal("0")
     for p in products:
         last_kardex_q = select(KardexEntry).where(KardexEntry.product_id == p.id)
-        if as_of_date:
-            last_kardex_q = last_kardex_q.where(KardexEntry.created_at <= as_of_date)
+        if as_of_date_dt:
+            last_kardex_q = last_kardex_q.where(KardexEntry.created_at <= as_of_date_dt)
         last_kardex_q = last_kardex_q.order_by(
             KardexEntry.created_at.desc(), KardexEntry.id.desc()
         ).limit(1)

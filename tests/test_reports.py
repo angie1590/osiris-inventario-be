@@ -425,6 +425,61 @@ async def test_report_stock_valorizado_matches_kardex_balance_value_weighted_ave
 
 
 @pytest.mark.asyncio
+async def test_report_kardex_date_only_includes_full_local_day(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _seed_ingreso(client, admin_token, operator_token)
+
+    movement_resp = await client.get(
+        f"/api/v1/kardex/{prod_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert movement_resp.status_code == 200
+    movement = movement_resp.json()["entries"][0]
+    created_utc = datetime.fromisoformat(movement["created_at"].replace("Z", "+00:00"))
+    movement_date = created_utc.astimezone(ZoneInfo(settings.APP_TIMEZONE)).date().isoformat()
+
+    report_resp = await client.get(
+        "/api/v1/reports/kardex",
+        params={
+            "product_id": prod_id,
+            "date_from": movement_date,
+            "date_to": movement_date,
+            "format": "json",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert report_resp.status_code == 200
+    assert len(report_resp.json()["entries"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_report_stock_valorizado_as_of_date_only_uses_local_day_end(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _seed_ingreso(client, admin_token, operator_token)
+
+    kardex_resp = await client.get(
+        f"/api/v1/kardex/{prod_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert kardex_resp.status_code == 200
+    movement = kardex_resp.json()["entries"][0]
+    created_utc = datetime.fromisoformat(movement["created_at"].replace("Z", "+00:00"))
+    movement_date = created_utc.astimezone(ZoneInfo(settings.APP_TIMEZONE)).date().isoformat()
+
+    report_resp = await client.get(
+        "/api/v1/reports/stock-valorizado",
+        params={"as_of_date": movement_date, "format": "json"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert report_resp.status_code == 200
+    items = report_resp.json()["items"]
+    item = next(i for i in items if i["id"] == prod_id)
+    assert item["stock"] > 0
+
+
+@pytest.mark.asyncio
 async def test_report_requires_admin_or_supervisor(
     client: AsyncClient, operator_token: str
 ):
