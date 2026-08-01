@@ -4,6 +4,11 @@ import pytest
 from httpx import AsyncClient
 
 
+@pytest.fixture(autouse=True)
+async def _company(company_config):
+    return company_config
+
+
 async def _create_product(client, admin_token, operator_token, name, stock="0.00"):
     category = await client.post(
         "/api/v1/categories",

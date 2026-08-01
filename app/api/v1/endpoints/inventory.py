@@ -27,12 +27,14 @@ from app.schemas.inventory import (
     AuthCodeRequest,
     BajaCreate,
     DocumentResponse,
+    DocumentPageResponse,
     DocumentAttachmentResponse,
     EgresoCreate,
     AdjustmentIncrementCostPreview,
     InventoryCountCreate,
     InventoryCountApply,
     InventoryCountResponse,
+    InventoryCountPageResponse,
     InventoryCountUpdate,
     IngresoCreate,
     SupplierCreate,
@@ -67,6 +69,16 @@ def _parse_document_date_bound(value: str | None, *, end_of_day: bool) -> dateti
         return local_datetime.astimezone(timezone.utc)
     parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _page_response(items: list, total: int, page: int, page_size: int) -> dict:
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size,
+    }
 
 
 # --- Conteos ---
@@ -104,6 +116,23 @@ async def list_counts(
 ):
     repo = InventoryRepository(db)
     return await repo.list_counts(date_from, date_to, status, limit, cursor)
+
+
+@router.get("/conteos/page", response_model=InventoryCountPageResponse)
+async def list_counts_page(
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    status: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    repo = InventoryRepository(db)
+    items, total = await repo.list_counts_page(
+        page, page_size, date_from, date_to, status
+    )
+    return _page_response(items, total, page, page_size)
 
 
 @router.get("/conteos/{count_id}", response_model=InventoryCountResponse)
@@ -499,6 +528,41 @@ async def list_ingresos(
     )
 
 
+@router.get("/ingresos/page", response_model=DocumentPageResponse)
+async def list_ingresos_page(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    product_id: int | None = None,
+    created_by: int | None = None,
+    type_: str | None = Query(None, alias="type"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    try:
+        date_from_dt = _parse_document_date_bound(date_from, end_of_day=False)
+        date_to_dt = _parse_document_date_bound(date_to, end_of_day=True)
+    except ValueError:
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime"
+        )
+    if date_from_dt and date_to_dt and date_from_dt > date_to_dt:
+        raise ValidationAppError("INVALID_DATE_RANGE", "date_from must be before date_to")
+    repo = InventoryRepository(db)
+    items, total = await repo.list_page(
+        DocumentType.IN,
+        page,
+        page_size,
+        date_from_dt,
+        date_to_dt,
+        product_id,
+        created_by,
+        type_,
+    )
+    return _page_response(items, total, page, page_size)
+
+
 @router.get("/ingresos/{document_id}", response_model=DocumentResponse)
 async def get_ingreso(
     document_id: int,
@@ -566,6 +630,34 @@ async def list_egresos(
         limit=limit,
         cursor=cursor,
     )
+
+
+@router.get("/egresos/page", response_model=DocumentPageResponse)
+async def list_egresos_page(
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    product_id: int | None = None,
+    created_by: int | None = None,
+    type_: str | None = Query(None, alias="type"),
+    purchase_document_number: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    repo = InventoryRepository(db)
+    items, total = await repo.list_page(
+        DocumentType.EG,
+        page,
+        page_size,
+        date_from,
+        date_to,
+        product_id,
+        created_by,
+        type_,
+        purchase_document_number=purchase_document_number,
+    )
+    return _page_response(items, total, page, page_size)
 
 
 @router.get("/egresos/{document_id}", response_model=DocumentResponse)
@@ -714,6 +806,30 @@ async def list_bajas(
     )
 
 
+@router.get("/bajas/page", response_model=DocumentPageResponse)
+async def list_bajas_page(
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    status: DocumentStatus | None = None,
+    created_by: int | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    repo = InventoryRepository(db)
+    items, total = await repo.list_page(
+        DocumentType.BI,
+        page,
+        page_size,
+        date_from,
+        date_to,
+        created_by=created_by,
+        status=status,
+    )
+    return _page_response(items, total, page, page_size)
+
+
 @router.get("/bajas/{document_id}", response_model=DocumentResponse)
 async def get_baja(
     document_id: int,
@@ -834,6 +950,30 @@ async def list_ajustes(
         limit=limit,
         cursor=cursor,
     )
+
+
+@router.get("/ajustes/page", response_model=DocumentPageResponse)
+async def list_ajustes_page(
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    status: DocumentStatus | None = None,
+    created_by: int | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    repo = InventoryRepository(db)
+    items, total = await repo.list_page(
+        DocumentType.AI,
+        page,
+        page_size,
+        date_from,
+        date_to,
+        created_by=created_by,
+        status=status,
+    )
+    return _page_response(items, total, page, page_size)
 
 
 @router.get("/ajustes/{document_id}", response_model=DocumentResponse)

@@ -23,6 +23,22 @@ router = APIRouter()
 _audit_roles = require_role(UserRole.admin, UserRole.supervisor)
 
 
+def _serialize_log(log) -> dict:
+    return {
+        "id": log.id,
+        "timestamp": log.timestamp.isoformat(),
+        "user_id": log.user_id,
+        "username": log.username,
+        "ip_address": log.ip_address,
+        "action": log.action.value,
+        "entity_type": log.entity_type,
+        "entity_id": log.entity_id,
+        "previous_values": log.previous_values,
+        "new_values": log.new_values,
+        "description": log.description,
+    }
+
+
 async def _get_max_export_days(db: AsyncSession) -> int:
     result = await db.execute(
         select(SystemParam).where(SystemParam.key == "max_export_date_range_days")
@@ -128,22 +144,51 @@ async def list_audit(
         limit=limit,
         cursor=cursor,
     )
-    return [
-        {
-            "id": log.id,
-            "timestamp": log.timestamp.isoformat(),
-            "user_id": log.user_id,
-            "username": log.username,
-            "ip_address": log.ip_address,
-            "action": log.action.value,
-            "entity_type": log.entity_type,
-            "entity_id": log.entity_id,
-            "previous_values": log.previous_values,
-            "new_values": log.new_values,
-            "description": log.description,
-        }
-        for log in logs
-    ]
+    return [_serialize_log(log) for log in logs]
+
+
+@router.get("/page")
+async def list_audit_page(
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    user_id: int | None = None,
+    action: AuditAction | None = None,
+    entity_type: str | None = None,
+    entity_id: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_audit_roles),
+):
+    try:
+        date_from_dt, _, _ = _parse_iso_datetime(
+            date_from, end_of_day_for_date_only=False
+        )
+        date_to_dt, _, _ = _parse_iso_datetime(date_to, end_of_day_for_date_only=True)
+    except ValueError:
+        raise ValidationAppError(
+            "INVALID_DATE_RANGE", "date_from/date_to must be valid ISO date or datetime"
+        )
+    if date_from_dt > date_to_dt:
+        raise ValidationAppError("INVALID_DATE_RANGE", "date_from must be before date_to")
+    repo = AuditRepository(db)
+    logs, total = await repo.list_page(
+        date_from_dt,
+        date_to_dt,
+        page,
+        page_size,
+        user_id,
+        action,
+        entity_type,
+        entity_id,
+    )
+    return {
+        "items": [_serialize_log(log) for log in logs],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size,
+    }
 
 
 @router.get("/export")

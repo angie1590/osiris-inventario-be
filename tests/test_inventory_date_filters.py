@@ -46,3 +46,36 @@ async def test_list_ingresos_includes_end_of_local_day(
 
     assert response.status_code == 200
     assert [document["number"] for document in response.json()] == ["IN-2026-000001"]
+
+
+@pytest.mark.asyncio
+async def test_list_ingresos_page_returns_total_and_second_page(
+    client: AsyncClient, admin_token: str, db_session: AsyncSession
+):
+    user = await db_session.scalar(select(User).where(User.username == "test_admin"))
+    db_session.add_all(
+        [
+            InventoryDocument(
+                number=f"IN-2026-{index:06d}",
+                doc_type=DocumentType.IN,
+                status=DocumentStatus.approved,
+                ingreso_type="initial_inventory",
+                created_by=user.id,
+            )
+            for index in range(1, 13)
+        ]
+    )
+    await db_session.commit()
+
+    response = await client.get(
+        "/api/v1/inventory/ingresos/page",
+        params={"page": 2, "page_size": 10},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 12
+    assert body["total_pages"] == 2
+    assert body["page"] == 2
+    assert len(body["items"]) == 2

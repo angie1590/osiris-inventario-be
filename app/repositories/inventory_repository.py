@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -190,6 +190,69 @@ class InventoryRepository:
         result = await self.db.execute(q)
         return list(result.scalars().unique().all())
 
+    async def list_page(
+        self,
+        doc_type: DocumentType,
+        page: int,
+        page_size: int,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        product_id: int | None = None,
+        created_by: int | None = None,
+        movement_type: str | None = None,
+        status: DocumentStatus | None = None,
+        purchase_document_number: str | None = None,
+    ) -> tuple[list[InventoryDocument], int]:
+        filters = [InventoryDocument.doc_type == doc_type]
+        if date_from:
+            filters.append(InventoryDocument.created_at >= date_from)
+        if date_to:
+            filters.append(InventoryDocument.created_at <= date_to)
+        if created_by:
+            filters.append(InventoryDocument.created_by == created_by)
+        if movement_type:
+            if doc_type == DocumentType.EG and movement_type == "baja":
+                filters.append(
+                    InventoryDocument.ingreso_type.in_([movement_type, *LEGACY_BAJA_TYPES])
+                )
+            else:
+                filters.append(InventoryDocument.ingreso_type == movement_type)
+        if status:
+            filters.append(InventoryDocument.status == status)
+        if purchase_document_number:
+            filters.append(
+                InventoryDocument.purchase_document_number.ilike(
+                    f"%{purchase_document_number.strip()}%"
+                )
+            )
+
+        base = select(InventoryDocument).where(*filters)
+        count_query = select(func.count(InventoryDocument.id)).where(*filters)
+        if product_id:
+            base = base.join(InventoryDocumentLine).where(
+                InventoryDocumentLine.product_id == product_id
+            )
+            count_query = (
+                select(func.count(func.distinct(InventoryDocument.id)))
+                .join(InventoryDocumentLine)
+                .where(*filters, InventoryDocumentLine.product_id == product_id)
+            )
+
+        total = int((await self.db.scalar(count_query)) or 0)
+        result = await self.db.execute(
+            base.options(
+                selectinload(InventoryDocument.supplier),
+                selectinload(InventoryDocument.attachments),
+                selectinload(InventoryDocument.lines).selectinload(
+                    InventoryDocumentLine.product
+                ),
+            )
+            .order_by(InventoryDocument.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        return list(result.scalars().unique().all()), total
+
     async def create_auth_code(self, code: AuthorizationCode) -> AuthorizationCode:
         self.db.add(code)
         await self.db.flush()
@@ -260,3 +323,36 @@ class InventoryRepository:
             q = q.where(InventoryCount.id < cursor)
         result = await self.db.execute(q.limit(limit))
         return list(result.scalars().unique().all())
+
+    async def list_counts_page(
+        self,
+        page: int,
+        page_size: int,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        status: str | None = None,
+    ) -> tuple[list[InventoryCount], int]:
+        filters = []
+        if date_from:
+            filters.append(InventoryCount.created_at >= date_from)
+        if date_to:
+            filters.append(InventoryCount.created_at <= date_to)
+        if status:
+            filters.append(InventoryCount.status == status)
+        total = int(
+            (await self.db.scalar(select(func.count(InventoryCount.id)).where(*filters)))
+            or 0
+        )
+        result = await self.db.execute(
+            select(InventoryCount)
+            .where(*filters)
+            .options(
+                selectinload(InventoryCount.lines),
+                selectinload(InventoryCount.positive_adjustment_document),
+                selectinload(InventoryCount.negative_adjustment_document),
+            )
+            .order_by(InventoryCount.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        return list(result.scalars().unique().all()), total

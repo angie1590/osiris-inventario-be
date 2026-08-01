@@ -66,7 +66,11 @@ async def test_kardex_peps_single_lot(
     )
     await client.post(
         "/api/v1/inventory/egresos",
-        json={"seller_name": "VENDEDOR TEST", "lines": [{"product_id": prod_id, "quantity": "3"}]},
+        json={
+            "seller_name": "VENDEDOR TEST",
+            "purchase_document_type": "none",
+            "lines": [{"product_id": prod_id, "quantity": "3"}],
+        },
         headers={"Authorization": f"Bearer {operator_token}"},
     )
 
@@ -112,7 +116,11 @@ async def test_kardex_peps_multiple_lots(
     # Egress of 7 — should consume first lot (5) + 2 from second (at 20.00)
     await client.post(
         "/api/v1/inventory/egresos",
-        json={"seller_name": "VENDEDOR TEST", "lines": [{"product_id": prod_id, "quantity": "7"}]},
+        json={
+            "seller_name": "VENDEDOR TEST",
+            "purchase_document_type": "none",
+            "lines": [{"product_id": prod_id, "quantity": "7"}],
+        },
         headers={"Authorization": f"Bearer {operator_token}"},
     )
 
@@ -152,7 +160,11 @@ async def test_kardex_weighted_average(
     # Egress of 5 at weighted avg 15.00
     await client.post(
         "/api/v1/inventory/egresos",
-        json={"seller_name": "VENDEDOR TEST", "lines": [{"product_id": prod_id, "quantity": "5"}]},
+        json={
+            "seller_name": "VENDEDOR TEST",
+            "purchase_document_type": "none",
+            "lines": [{"product_id": prod_id, "quantity": "5"}],
+        },
         headers={"Authorization": f"Bearer {operator_token}"},
     )
 

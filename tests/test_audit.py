@@ -24,6 +24,28 @@ async def test_audit_logged_on_login(client: AsyncClient, admin_token: str):
 
 
 @pytest.mark.asyncio
+async def test_audit_page_returns_total(client: AsyncClient, admin_token: str):
+    now = datetime.now(timezone.utc)
+    response = await client.get(
+        "/api/v1/audit/page",
+        params={
+            "date_from": (now - timedelta(minutes=5)).isoformat(),
+            "date_to": (now + timedelta(minutes=1)).isoformat(),
+            "page": 1,
+            "page_size": 10,
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] >= 1
+    assert body["page"] == 1
+    assert body["page_size"] == 10
+    assert len(body["items"]) <= 10
+
+
+@pytest.mark.asyncio
 async def test_audit_requires_date_range(client: AsyncClient, admin_token: str):
     resp = await client.get(
         "/api/v1/audit", headers={"Authorization": f"Bearer {admin_token}"}
