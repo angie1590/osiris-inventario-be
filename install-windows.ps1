@@ -241,8 +241,14 @@ if (Test-Path $EnvFile) {
 else {
   $projectName = (Split-Path $BackendDir -Leaf).ToLower() -replace '[^a-z0-9_-]', ''
   $databaseVolume = "${projectName}_postgres_data"
-  docker volume inspect $databaseVolume *> $null
-  if ($LASTEXITCODE -eq 0) {
+  $volumeExists = $false
+  try {
+    docker volume inspect $databaseVolume *> $null
+    $volumeExists = ($LASTEXITCODE -eq 0)
+  }
+  catch {
+  }
+  if ($volumeExists) {
     Write-Host "Se encontro una base previa ($databaseVolume), pero falta .env.prod." -ForegroundColor Yellow
     Write-Host "Esto ocurre si se borro la carpeta despues de una instalacion parcial." -ForegroundColor Yellow
     $resetAnswer = Prompt-Value "Eliminar esa base y empezar desde cero? Se perderan sus datos (s/N)" "N"
