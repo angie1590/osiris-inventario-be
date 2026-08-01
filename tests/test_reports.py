@@ -337,6 +337,8 @@ async def test_report_ventas_json(
     assert len(data["daily_closings"]) >= 1
     assert len(data["sales_by_seller"]) == 2
     assert len(data["commissions_by_month"]) == 2
+    assert len(data["monthly_sales"]) >= 1
+    assert len(data["quarterly_summary"]) >= 1
 
 
 @pytest.mark.asyncio

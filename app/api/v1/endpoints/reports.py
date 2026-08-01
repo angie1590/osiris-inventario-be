@@ -147,6 +147,12 @@ def _local_month_key(dt: datetime) -> str:
     return dt.astimezone(ZoneInfo(settings.APP_TIMEZONE)).strftime("%Y-%m")
 
 
+def _local_quarter_key(dt: datetime) -> str:
+    local_dt = dt.astimezone(ZoneInfo(settings.APP_TIMEZONE))
+    quarter = ((local_dt.month - 1) // 3) + 1
+    return f"{local_dt.year}-Q{quarter}"
+
+
 async def _username_map(db: AsyncSession, user_ids: set[int]) -> dict[int, str]:
     if not user_ids:
         return {}
@@ -534,6 +540,9 @@ async def report_ventas(
 
     sale_amount_by_doc: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
     purchase_amount_by_doc: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+    sale_doc_month: dict[int, str] = {}
+    sale_doc_quarter: dict[int, str] = {}
+    purchase_doc_quarter: dict[int, str] = {}
 
     if sale_doc_ids:
         sale_lines_result = await db.execute(
@@ -544,11 +553,13 @@ async def report_ventas(
                 InventoryDocumentLine.unit_price_base,
                 InventoryDocumentLine.discount_type,
                 InventoryDocumentLine.discount_value,
+                Product.name,
             )
+            .join(Product, Product.id == InventoryDocumentLine.product_id)
             .where(InventoryDocumentLine.document_id.in_(sale_doc_ids))
             .order_by(InventoryDocumentLine.document_id.asc(), InventoryDocumentLine.id.asc())
         )
-        for doc_id, quantity, unit_price, unit_price_base, discount_type, discount_value in sale_lines_result.all():
+        for doc_id, quantity, unit_price, unit_price_base, discount_type, discount_value, _product_name in sale_lines_result.all():
             sale_amount_by_doc[int(doc_id)] += _sale_line_amount(
                 Decimal(str(quantity or 0)),
                 Decimal(str(unit_price or 0)),
@@ -593,17 +604,76 @@ async def report_ventas(
     sales_count = 0
     purchases_count = 0
     commission_total = Decimal("0")
+    monthly_sales: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    quarterly_summary: dict[
+        str,
+        dict[str, Decimal | int | str],
+    ] = defaultdict(
+        lambda: {
+            "sales_total": Decimal("0"),
+            "purchase_total": Decimal("0"),
+            "products_sold": Decimal("0"),
+            "top_product_name": "",
+            "top_product_quantity": Decimal("0"),
+        }
+    )
+    quarterly_product_quantities: dict[str, dict[str, Decimal]] = defaultdict(
+        lambda: defaultdict(lambda: Decimal("0"))
+    )
+
+    sale_doc_lookup = {doc.id: doc for doc in sale_docs}
+    purchase_doc_lookup = {doc.id: doc for doc in purchase_docs}
+
+    if sale_doc_ids:
+        sale_quantity_result = await db.execute(
+            select(
+                InventoryDocumentLine.document_id,
+                InventoryDocumentLine.quantity,
+                Product.name,
+            )
+            .join(Product, Product.id == InventoryDocumentLine.product_id)
+            .where(InventoryDocumentLine.document_id.in_(sale_doc_ids))
+            .order_by(InventoryDocumentLine.document_id.asc(), InventoryDocumentLine.id.asc())
+        )
+        for doc_id, quantity, product_name in sale_quantity_result.all():
+            doc = sale_doc_lookup.get(int(doc_id))
+            if doc is None:
+                continue
+            quarter_key = _local_quarter_key(doc.created_at)
+            quarter_data = quarterly_summary[quarter_key]
+            product_name_key = (product_name or "SIN PRODUCTO").strip().upper() or "SIN PRODUCTO"
+            quantity_decimal = Decimal(str(quantity or 0))
+            quarter_data["products_sold"] = Decimal(str(quarter_data["products_sold"])) + quantity_decimal
+            quarterly_product_quantities[quarter_key][product_name_key] = Decimal(
+                str(quarterly_product_quantities[quarter_key][product_name_key])
+            ) + quantity_decimal
+
+    for doc in sale_docs:
+        month_key = _local_month_key(doc.created_at)
+        quarter_key = _local_quarter_key(doc.created_at)
+        sale_doc_month[doc.id] = month_key
+        sale_doc_quarter[doc.id] = quarter_key
+
+    for doc in purchase_docs:
+        doc_total = purchase_amount_by_doc.get(doc.id, Decimal("0"))
+        purchase_doc_quarter[doc.id] = _local_quarter_key(doc.created_at)
+        purchases_total += doc_total
+        purchases_count += 1
+        quarter_data = quarterly_summary[purchase_doc_quarter[doc.id]]
+        quarter_data["purchase_total"] = Decimal(str(quarter_data["purchase_total"])) + doc_total
 
     for doc in sale_docs:
         doc_total = sale_amount_by_doc.get(doc.id, Decimal("0"))
         seller_name = (doc.seller_name or "SIN VENDEDOR").strip().upper() or "SIN VENDEDOR"
         date_key = _local_date_key(doc.created_at)
-        month_key = _local_month_key(doc.created_at)
+        month_key = sale_doc_month.get(doc.id, _local_month_key(doc.created_at))
+        quarter_key = sale_doc_quarter.get(doc.id, _local_quarter_key(doc.created_at))
         doc_commission = (doc_total * commission_percent) / Decimal("100")
 
         sales_total += doc_total
         commission_total += doc_commission
         sales_count += 1
+        monthly_sales[month_key] = Decimal(str(monthly_sales[month_key])) + doc_total
         daily = daily_closings[date_key]
         daily["sales_count"] = int(daily["sales_count"]) + 1
         daily["sales_total"] = Decimal(str(daily["sales_total"])) + doc_total
@@ -621,10 +691,37 @@ async def report_ventas(
         monthly["sales_total"] = Decimal(str(monthly["sales_total"])) + doc_total
         monthly["commission_amount"] = Decimal(str(monthly["commission_amount"])) + doc_commission
 
-    for doc in purchase_docs:
-        doc_total = purchase_amount_by_doc.get(doc.id, Decimal("0"))
-        purchases_total += doc_total
-        purchases_count += 1
+        quarter_data = quarterly_summary[quarter_key]
+        quarter_data["sales_total"] = Decimal(str(quarter_data["sales_total"])) + doc_total
+
+    quarterly_rows = []
+    for quarter_key in sorted(quarterly_summary.keys()):
+        quarter_data = quarterly_summary[quarter_key]
+        product_quantities = quarterly_product_quantities.get(quarter_key, {})
+        top_product_name = "SIN PRODUCTO"
+        top_product_quantity = Decimal("0")
+        if product_quantities:
+          top_product_name, top_product_quantity = max(
+              product_quantities.items(), key=lambda item: (item[1], item[0])
+          )
+        quarterly_rows.append(
+            {
+                "quarter": quarter_key,
+                "sales_total": float(quarter_data["sales_total"]),
+                "products_sold": float(quarter_data["products_sold"]),
+                "top_product_name": top_product_name,
+                "top_product_quantity": float(top_product_quantity),
+                "utility": float(
+                    Decimal(str(quarter_data["sales_total"]))
+                    - Decimal(str(quarter_data["purchase_total"]))
+                ),
+            }
+        )
+
+    monthly_sales_rows = [
+        {"month": month, "sales_total": float(total)}
+        for month, total in sorted(monthly_sales.items())
+    ]
 
     daily_closing_rows = [
         {
@@ -674,6 +771,8 @@ async def report_ventas(
         "daily_closings": daily_closing_rows,
         "sales_by_seller": seller_summary_rows,
         "commissions_by_month": commissions_by_month_rows,
+        "monthly_sales": monthly_sales_rows,
+        "quarterly_summary": quarterly_rows,
     }
 
 
