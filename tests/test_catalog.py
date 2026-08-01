@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient, Response
+from sqlalchemy import text
 
 
 @pytest.mark.asyncio
@@ -147,6 +148,46 @@ async def test_product_stock_readonly(
     )
     assert resp.status_code == 201
     assert float(resp.json()["stock_actual"]) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_list_products_orders_by_stock_desc_with_stable_cursor(
+    client: AsyncClient, admin_token: str, db_session
+):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    category = await client.post(
+        "/api/v1/categories", json={"name": "Stock Order Cat"}, headers=headers
+    )
+    category_id = category.json()["id"]
+
+    product_ids = []
+    for name in ("Stock Five A", "Stock Five B", "Stock Two"):
+        product = await client.post(
+            "/api/v1/products",
+            json={"name": name, "category_id": category_id, "pvp": "5.00"},
+            headers=headers,
+        )
+        product_ids.append(product.json()["id"])
+
+    for product_id, stock in zip(product_ids, (2, 5, 5), strict=True):
+        await db_session.execute(
+            text("SELECT update_product_stock(:product_id, :stock)"),
+            {"product_id": product_id, "stock": stock},
+        )
+    await db_session.commit()
+
+    first_page = await client.get(
+        "/api/v1/products?stock_desc=true&limit=2", headers=headers
+    )
+    assert first_page.status_code == 200
+    assert [product["id"] for product in first_page.json()] == product_ids[1:]
+
+    second_page = await client.get(
+        f"/api/v1/products?stock_desc=true&limit=2&cursor={product_ids[2]}",
+        headers=headers,
+    )
+    assert second_page.status_code == 200
+    assert [product["id"] for product in second_page.json()] == product_ids[:1]
 
 
 @pytest.mark.asyncio

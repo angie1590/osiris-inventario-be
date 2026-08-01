@@ -58,6 +58,7 @@ async def list_products(
     include_descendants: bool = True,
     status: ProductStatus | None = None,
     bajo_stock: bool | None = None,
+    stock_desc: bool = False,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(_read_roles),
 ):
@@ -70,6 +71,7 @@ async def list_products(
         include_descendants=include_descendants,
         status=status,
         bajo_stock=bajo_stock,
+        stock_desc=stock_desc,
     )
     return [_to_response(p) for p in products]
 

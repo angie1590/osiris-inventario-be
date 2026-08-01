@@ -198,6 +198,7 @@ class ProductService:
         include_descendants: bool = True,
         status: ProductStatus | None = None,
         bajo_stock: bool | None = None,
+        stock_desc: bool = False,
     ) -> list[Product]:
         category_ids = None
         if category_id:
@@ -215,6 +216,7 @@ class ProductService:
             category_ids=category_ids,
             status=status,
             bajo_stock=bajo_stock,
+            stock_desc=stock_desc,
         )
         return products
 

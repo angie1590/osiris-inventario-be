@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import ProductStatus
@@ -25,9 +25,26 @@ class ProductRepository:
         category_ids: list[int] | None = None,
         status: ProductStatus | None = None,
         bajo_stock: bool | None = None,
+        stock_desc: bool = False,
     ) -> list[Product]:
-        q = select(Product).order_by(Product.id)
-        if cursor:
+        q = select(Product)
+        if stock_desc:
+            q = q.order_by(Product.stock_actual.desc(), Product.id)
+            if cursor:
+                anchor = await self.db.get(Product, cursor)
+                if anchor:
+                    q = q.where(
+                        or_(
+                            Product.stock_actual < anchor.stock_actual,
+                            and_(
+                                Product.stock_actual == anchor.stock_actual,
+                                Product.id > cursor,
+                            ),
+                        )
+                    )
+        else:
+            q = q.order_by(Product.id)
+        if cursor and not stock_desc:
             q = q.where(Product.id > cursor)
         if name:
             term = f"%{name}%"
