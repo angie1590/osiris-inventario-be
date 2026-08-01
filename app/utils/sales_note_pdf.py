@@ -1,8 +1,11 @@
 from decimal import Decimal
 from io import BytesIO
+from zoneinfo import ZoneInfo
 
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
+
+from app.core.config import settings
 
 
 def _customer_data(notes: str | None) -> dict[str, str]:
@@ -29,6 +32,7 @@ def build_sales_note_pdf(document) -> bytes:
     document_date = document.purchase_document_date
     if document_date is None:
         raise ValueError("Sales note document date is required")
+    local_date = document_date.astimezone(ZoneInfo(settings.APP_TIMEZONE))
     lines = list(document.lines)
     total = sum(
         (line.quantity * line.unit_price for line in lines),
@@ -38,7 +42,7 @@ def build_sales_note_pdf(document) -> bytes:
     for page_start in range(0, len(lines), 9):
         page_lines = lines[page_start : page_start + 9]
         pdf.setFont("Helvetica", 8)
-        pdf.drawString(20 * mm, 115 * mm, document_date.strftime("%d/%m/%Y"))
+        pdf.drawString(20 * mm, 115 * mm, local_date.strftime("%d/%m/%Y"))
         pdf.drawString(20 * mm, 109 * mm, customer["name"][:60])
         pdf.drawString(20 * mm, 102.5 * mm, customer["ruc"][:30])
         pdf.drawString(76 * mm, 102.5 * mm, customer["phone"][:20])

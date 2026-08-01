@@ -693,6 +693,11 @@ async def print_egreso_sales_note(
     doc = await repo.get_by_id(document_id)
     if not doc or doc.doc_type != DocumentType.EG:
         raise NotFoundError("DOCUMENT_NOT_FOUND", "Egreso not found")
+    if doc.status != DocumentStatus.approved:
+        raise ValidationAppError(
+            "DOCUMENT_NOT_PRINTABLE",
+            "Only approved documents can be printed",
+        )
     if doc.egreso_type != "sale" or doc.purchase_document_type != "sales_note":
         raise ValidationAppError(
             "INVALID_SALES_NOTE",
