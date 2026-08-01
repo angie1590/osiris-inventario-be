@@ -119,6 +119,25 @@ def _dump_with_shoe_child(tmp_path):
     return dump
 
 
+def _dump_with_aseo_child(tmp_path):
+    dump = tmp_path / "legacy-aseo.sql"
+    dump.write_text(
+        "".join(
+            (
+                _insert("categoria", [(62, "ASEO", "\x01", None), (63, "ASEO", "\x01", 62)]),
+                _insert("tipo_de_producto", [(1, "ASEO", "\x01")]),
+                _insert("atributo", [(1, "MARCA", "\x01", None, 1)]),
+                _insert("atributo_descripcion", [(1, "MARCA A", "\x01", 1, 1), (2, "MARCA B", "\x01", 1, 2)]),
+                _insert("proveedor", [(1, "1890010667001", "A", "1234567", None, None, "VALIDO", "VALIDO", None, "\x01", None, 1)]),
+                _insert("producto", [_product(1, "ASEO-1", 20, 1, category_id=62), _product(2, "ASEO-2", 20, 1, category_id=63)]),
+            )
+        ),
+        encoding="utf-8",
+        newline="",
+    )
+    return dump
+
+
 def test_build_plan_applies_migration_rules(tmp_path):
     dump = _dump(tmp_path)
 
@@ -153,6 +172,22 @@ async def test_apply_plan_flattens_mocasin_into_zapato(tmp_path):
         categories = list((await session.execute(select(Category))).scalars())
         assert [(category.name, category.parent_id) for category in categories] == [("ZAPATO", None)]
         products = list((await session.execute(select(Product).order_by(Product.isbn))).scalars())
+        assert {product.category_id for product in products} == {categories[0].id}
+
+
+async def test_apply_plan_flattens_aseo_child_into_parent(tmp_path):
+    async with TestSessionLocal() as session:
+        session.add(User(username="admin", hashed_password=hash_password("Admin@12345!"), full_name="Administrador", role=UserRole.admin, is_active=True))
+        await session.commit()
+
+    plan = build_plan(_dump_with_aseo_child(tmp_path))
+    assert plan.flattened_category_parents == {63: 62}
+    await apply_plan(plan, "admin", TestSessionLocal)
+
+    async with TestSessionLocal() as session:
+        categories = list((await session.execute(select(Category))).scalars())
+        assert [(category.name, category.parent_id) for category in categories] == [("ASEO", None)]
+        products = list((await session.execute(select(Product))).scalars())
         assert {product.category_id for product in products} == {categories[0].id}
 
 
@@ -241,3 +276,15 @@ async def test_apply_real_legacy_dump():
         assert await session.scalar(select(func.sum(Product.stock_actual))) == Decimal("14687.0000")
         assert await session.scalar(select(func.count()).select_from(InventoryLot)) == 3790
         assert await session.scalar(select(func.count()).select_from(KardexEntry)) == 3790
+        aseo = list(
+            (
+                await session.execute(
+                    select(Category).where(func.upper(Category.name) == "ASEO")
+                )
+            ).scalars()
+        )
+        assert len(aseo) == 1
+        assert aseo[0].parent_id is None
+        assert await session.scalar(
+            select(func.count()).select_from(Product).where(Product.category_id == aseo[0].id)
+        ) == 8

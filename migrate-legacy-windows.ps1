@@ -57,17 +57,16 @@ $DryRunReport = Join-Path $ReportDirectory "migration-dry-run-$Timestamp.json"
 $FinalReport = Join-Path $ReportDirectory "migration-applied-$Timestamp.json"
 $RemoteDump = "/tmp/osiris-legacy-dump.sql"
 $RemoteReport = "/tmp/osiris-migration-report.json"
+$RemoteUsersBackup = "/tmp/osiris-migration-users.sql"
+$UsersBackup = Join-Path $env:TEMP "osiris-migration-users-$Timestamp.sql"
 $ContainerId = ""
+$PostgresContainerId = ""
 
 Assert-Path $ComposeFile "No se encontro docker-compose.prod.yml en $BackendDir"
 Assert-Path $EnvFile "No se encontro .env.prod. Ejecuta install-windows.ps1 primero."
 Assert-Path $MigrationScript "No se encontro scripts\migrate_legacy_dump.py. Actualiza el backend."
 Assert-Path $BackupScript "No se encontro backup-db.ps1."
 Assert-Path $DumpFile "No se encontro el dump: $DumpFile"
-
-if ($Actor -ne "admin") {
-  throw "Al recrear la base solo existe el usuario inicial 'admin'. No uses -Actor con otro valor."
-}
 
 $EnvValues = Read-EnvFile $EnvFile
 $PostgresUser = $EnvValues["POSTGRES_USER"]
@@ -144,6 +143,20 @@ try {
   Write-Host "Generando respaldo previo..."
   & $BackupScript -BackupDir $BackupDirectory
 
+  $PostgresContainerId = (docker compose --env-file $EnvFile -f $ComposeFile ps -q postgres).Trim()
+  Assert-LastExitCode "No se pudo consultar el contenedor PostgreSQL."
+  if ([string]::IsNullOrWhiteSpace($PostgresContainerId)) {
+    throw "No se encontro el contenedor PostgreSQL en ejecucion."
+  }
+
+  Write-Host "Guardando usuarios y credenciales actuales..."
+  docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
+    pg_dump -U $PostgresUser -d $PostgresDb --data-only --table=public.users `
+    --column-inserts --no-owner --no-privileges --file=$RemoteUsersBackup
+  Assert-LastExitCode "No se pudieron guardar los usuarios actuales."
+  docker cp "${PostgresContainerId}:$RemoteUsersBackup" $UsersBackup
+  Assert-LastExitCode "No se pudo copiar el respaldo temporal de usuarios."
+
   Write-Host ""
   Write-Host "Deteniendo API..."
   docker compose --env-file $EnvFile -f $ComposeFile stop api
@@ -166,28 +179,37 @@ try {
   $ContainerId = (docker compose --env-file $EnvFile -f $ComposeFile ps -q api).Trim()
   Assert-LastExitCode "No se pudo consultar el nuevo contenedor API."
 
+  Write-Host "Restaurando usuarios y credenciales originales..."
+  docker cp $UsersBackup "${PostgresContainerId}:$RemoteUsersBackup"
+  Assert-LastExitCode "No se pudo copiar el respaldo de usuarios al contenedor PostgreSQL."
+  docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
+    psql -v ON_ERROR_STOP=1 -U $PostgresUser -d $PostgresDb `
+    -c "TRUNCATE TABLE users RESTART IDENTITY CASCADE"
+  Assert-LastExitCode "No se pudo preparar la restauracion de usuarios."
+  docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
+    psql -v ON_ERROR_STOP=1 -U $PostgresUser -d $PostgresDb -f $RemoteUsersBackup
+  Assert-LastExitCode "No se pudieron restaurar los usuarios originales."
+  docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
+    psql -v ON_ERROR_STOP=1 -U $PostgresUser -d $PostgresDb `
+    -c "SELECT setval(pg_get_serial_sequence('users','id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM users"
+  Assert-LastExitCode "No se pudo actualizar la secuencia de usuarios."
+
   Write-Host "Copiando nuevamente el dump al contenedor recreado..."
   docker cp $DumpFile "${ContainerId}:$RemoteDump"
   Assert-LastExitCode "No se pudo copiar el dump al contenedor recreado."
 
-  Write-Host "Aplicando migracion completa con ZAPATO aplanada..."
+  Write-Host "Aplicando migracion completa con ZAPATO y ASEO aplanadas..."
   docker compose --env-file $EnvFile -f $ComposeFile exec -T api `
     python -m scripts.migrate_legacy_dump $RemoteDump `
     --actor $Actor --report $RemoteReport --apply
   Assert-LastExitCode "La migracion fallo. La base recreada quedo sin los datos del dump; usa el respaldo para restaurar si es necesario."
-
-  Write-Host "Restableciendo y verificando acceso del usuario admin..."
-  docker compose --env-file $EnvFile -f $ComposeFile exec -T api `
-    python -m scripts.reset_admin_password --password "Admin@12345!"
-  Assert-LastExitCode "La migracion termino, pero no se pudo restablecer la clave del usuario admin."
 
   docker cp "${ContainerId}:$RemoteReport" $FinalReport
   Assert-LastExitCode "La migracion termino, pero no se pudo copiar el reporte final."
 
   Write-Host ""
   Write-Host "Migracion completada."
-  Write-Host "Usuario temporal: admin"
-  Write-Host "Clave temporal: Admin@12345!"
+  Write-Host "Usuarios y claves conservados sin cambios."
   Write-Host "Reporte: $FinalReport"
   Write-Host "Respaldos: $BackupDirectory"
 }
@@ -196,5 +218,10 @@ finally {
     docker compose --env-file $EnvFile -f $ComposeFile exec -T api `
       rm -f $RemoteDump $RemoteReport 2>$null | Out-Null
   }
+  if (-not [string]::IsNullOrWhiteSpace($PostgresContainerId)) {
+    docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
+      rm -f $RemoteUsersBackup 2>$null | Out-Null
+  }
+  Remove-Item $UsersBackup -Force -ErrorAction SilentlyContinue
   Pop-Location
 }

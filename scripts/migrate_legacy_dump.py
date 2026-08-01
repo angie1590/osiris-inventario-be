@@ -229,8 +229,16 @@ def build_plan(path: Path) -> MigrationPlan:
         row[0]: row[3]
         for row in tables["categoria"]
         if row[3] is not None
-        and str(row[1]).strip().upper() == "MOCASIN"
-        and str(categories_by_id[row[3]][1]).strip().upper() == "ZAPATO"
+        and (
+            (
+                str(row[1]).strip().upper() == "MOCASIN"
+                and str(categories_by_id[row[3]][1]).strip().upper() == "ZAPATO"
+            )
+            or (
+                str(row[1]).strip().upper() == "ASEO"
+                and str(categories_by_id[row[3]][1]).strip().upper() == "ASEO"
+            )
+        )
     }
     category_parents = {row[0]: row[3] for row in tables["categoria"]}
     required_active_categories = {
