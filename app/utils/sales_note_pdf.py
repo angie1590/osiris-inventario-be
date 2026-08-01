@@ -53,8 +53,8 @@ def build_sales_note_pdf(document) -> bytes:
             unit_price = line.unit_price or Decimal("0")
             pdf.drawCentredString(15 * mm, y, _quantity(line.quantity))
             pdf.drawString(22 * mm, y, (line.product_name or "")[:42])
-            pdf.drawRightString(82 * mm, y, f"{unit_price:.2f}")
-            pdf.drawRightString(97 * mm, y, f"{line.quantity * unit_price:.2f}")
+            pdf.drawRightString(82 * mm, y - (0.2 * mm), f"{unit_price:.2f}")
+            pdf.drawRightString(97 * mm, y - (0.2 * mm), f"{line.quantity * unit_price:.2f}")
 
         if page_start + 9 >= len(lines):
             seller_name = (document.seller_name or "").strip()
