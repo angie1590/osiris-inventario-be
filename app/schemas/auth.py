@@ -26,7 +26,7 @@ class TokenResponse(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str = Field(..., min_length=1)
+    current_password: str | None = None
     new_password: str = Field(..., min_length=8)
 
 

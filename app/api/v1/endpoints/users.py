@@ -4,7 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.deps import require_role
 from app.core.exceptions import ConflictError, NotFoundError
-from app.core.security import hash_password
+from app.core.redis import get_redis
+from app.core.security import DEFAULT_USER_PASSWORD, hash_password
 from app.models.enums import AuditAction, UserRole
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
@@ -14,6 +15,7 @@ from app.services.audit_service import AuditService
 router = APIRouter()
 
 _admin_only = require_role(UserRole.admin)
+_admin_or_supervisor = require_role(UserRole.admin, UserRole.supervisor)
 
 
 @router.get("", response_model=list[UserResponse])
@@ -41,7 +43,7 @@ async def create_user(
 
     new_user = User(
         username=body.username,
-        hashed_password=hash_password(body.password),
+        hashed_password=hash_password(DEFAULT_USER_PASSWORD),
         full_name=body.full_name,
         role=body.role,
         is_active=body.is_active,
@@ -121,6 +123,42 @@ async def update_user(
             "must_change_password": user.must_change_password,
         },
         description=f"Usuario '{user.username}' actualizado",
+        request=request,
+    )
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@router.post("/{user_id}/reset-password", response_model=UserResponse)
+async def reset_user_password(
+    user_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_admin_or_supervisor),
+):
+    repo = UserRepository(db)
+    user = await repo.get_by_id(user_id)
+    if not user:
+        raise NotFoundError("USER_NOT_FOUND", "User not found")
+
+    user.hashed_password = hash_password(DEFAULT_USER_PASSWORD)
+    user.must_change_password = True
+    await repo.revoke_all_refresh_tokens(user.id)
+
+    # Corta las sesiones activas: sin la clave de sesión, el access token deja de servir.
+    redis = await get_redis()
+    async for key in redis.scan_iter(match=f"session:{user.id}:*"):
+        await redis.delete(key)
+
+    audit = AuditService(db)
+    await audit.log(
+        AuditAction.PASSWORD_CHANGED,
+        user_id=current_user.id,
+        username=current_user.username,
+        entity_type="user",
+        entity_id=user.id,
+        description=f"Contraseña de '{user.username}' restablecida por defecto",
         request=request,
     )
     await db.commit()

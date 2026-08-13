@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.exceptions import UnauthorizedError, ValidationAppError
 from app.core.redis import get_redis
 from app.core.security import (
+    DEFAULT_USER_PASSWORD,
     create_access_token,
     create_refresh_token,
     decode_token,
@@ -189,14 +190,22 @@ class AuthService:
     async def change_password(
         self,
         user: User,
-        current_password: str,
+        current_password: str | None,
         new_password: str,
         access_token: str,
         request: Request | None = None,
     ) -> None:
-        if not verify_password(current_password, user.hashed_password):
+        # En cambio forzado no se pide la contraseña actual (puede ser la genérica).
+        if not user.must_change_password and not verify_password(
+            current_password or "", user.hashed_password
+        ):
             raise ValidationAppError(
                 "INVALID_CURRENT_PASSWORD", "Current password is incorrect"
+            )
+
+        if new_password == DEFAULT_USER_PASSWORD:
+            raise ValidationAppError(
+                "PASSWORD_NOT_ALLOWED", "La nueva contraseña no puede ser la genérica"
             )
 
         user.hashed_password = hash_password(new_password)
