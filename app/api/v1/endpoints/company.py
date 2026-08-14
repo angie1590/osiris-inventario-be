@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import require_admin, require_any_role
+from app.core.deps import require_admin_or_supervisor, require_any_role
 from app.core.exceptions import NotFoundError
 from app.models.company_config import CompanyConfig
 from app.models.user import User
@@ -76,7 +76,7 @@ async def create_company(
     body: CompanyConfigCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_admin_or_supervisor),
 ):
     svc = CompanyService(db)
     company = await svc.create(body, current_user, request)
@@ -88,7 +88,7 @@ async def update_company(
     body: CompanyConfigUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_admin_or_supervisor),
 ):
     svc = CompanyService(db)
     company = await svc.update(body, current_user, request)

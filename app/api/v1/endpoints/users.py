@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import require_role
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.core.redis import get_redis
 from app.core.security import DEFAULT_USER_PASSWORD, hash_password
 from app.models.enums import AuditAction, UserRole
@@ -14,8 +14,15 @@ from app.services.audit_service import AuditService
 
 router = APIRouter()
 
-_admin_only = require_role(UserRole.admin)
 _admin_or_supervisor = require_role(UserRole.admin, UserRole.supervisor)
+
+
+def _assert_can_manage(current_user: User, target_role: UserRole) -> None:
+    """El supervisor no gestiona cuentas de administrador."""
+    if current_user.role != UserRole.admin and target_role == UserRole.admin:
+        raise ForbiddenError(
+            detail="No tienes permiso para gestionar cuentas de administrador."
+        )
 
 
 @router.get("", response_model=list[UserResponse])
@@ -23,10 +30,13 @@ async def list_users(
     limit: int = 50,
     cursor: int | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_admin_only),
+    current_user: User = Depends(_admin_or_supervisor),
 ):
     repo = UserRepository(db)
-    return await repo.list_users(limit=limit, cursor=cursor)
+    users = await repo.list_users(limit=limit, cursor=cursor)
+    if current_user.role != UserRole.admin:
+        users = [u for u in users if u.role != UserRole.admin]
+    return users
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -34,8 +44,9 @@ async def create_user(
     body: UserCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_admin_only),
+    current_user: User = Depends(_admin_or_supervisor),
 ):
+    _assert_can_manage(current_user, body.role)
     repo = UserRepository(db)
     existing = await repo.get_by_username(body.username)
     if existing:
@@ -71,12 +82,13 @@ async def create_user(
 async def get_user(
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_admin_only),
+    current_user: User = Depends(_admin_or_supervisor),
 ):
     repo = UserRepository(db)
     user = await repo.get_by_id(user_id)
     if not user:
         raise NotFoundError("USER_NOT_FOUND", "User not found")
+    _assert_can_manage(current_user, user.role)
     return user
 
 
@@ -86,12 +98,15 @@ async def update_user(
     body: UserUpdate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_admin_only),
+    current_user: User = Depends(_admin_or_supervisor),
 ):
     repo = UserRepository(db)
     user = await repo.get_by_id(user_id)
     if not user:
         raise NotFoundError("USER_NOT_FOUND", "User not found")
+    _assert_can_manage(current_user, user.role)
+    if body.role is not None:
+        _assert_can_manage(current_user, body.role)
 
     previous = {
         "role": user.role.value,
@@ -141,6 +156,7 @@ async def reset_user_password(
     user = await repo.get_by_id(user_id)
     if not user:
         raise NotFoundError("USER_NOT_FOUND", "User not found")
+    _assert_can_manage(current_user, user.role)
 
     user.hashed_password = hash_password(DEFAULT_USER_PASSWORD)
     user.must_change_password = True
@@ -171,12 +187,13 @@ async def deactivate_user(
     user_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_admin_only),
+    current_user: User = Depends(_admin_or_supervisor),
 ):
     repo = UserRepository(db)
     user = await repo.get_by_id(user_id)
     if not user:
         raise NotFoundError("USER_NOT_FOUND", "User not found")
+    _assert_can_manage(current_user, user.role)
     if user.id == current_user.id:
         raise ConflictError("CANNOT_DEACTIVATE_SELF", "Cannot deactivate your own account")
 

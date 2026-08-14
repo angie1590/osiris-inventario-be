@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_company_configured, require_role
-from app.core.exceptions import NotFoundError, ValidationAppError
+from app.core.exceptions import ForbiddenError, NotFoundError, ValidationAppError
 from app.models.enums import DocumentStatus, DocumentType, UserRole
 from app.models.inventory import (
     InventoryCount,
@@ -50,10 +50,14 @@ from app.utils.sales_note_pdf import build_sales_note_pdf
 
 router = APIRouter()
 
-_operator_up = require_role(UserRole.admin, UserRole.operator)
-_admin_only = require_role(UserRole.admin)
+_operator_up = require_role(UserRole.admin, UserRole.supervisor, UserRole.operator)
 _approver_roles = require_role(UserRole.admin, UserRole.supervisor)
 _read_roles = require_role(UserRole.admin, UserRole.operator, UserRole.supervisor)
+
+
+def _sale_only(user: User) -> bool:
+    """El vendedor solo opera egresos de tipo venta."""
+    return user.role == UserRole.operator
 
 
 def _parse_document_date_bound(value: str | None, *, end_of_day: bool) -> datetime | None:
@@ -196,7 +200,7 @@ async def create_ingreso(
     body: IngresoCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_operator_up),
+    current_user: User = Depends(_approver_roles),
     _company: None = Depends(require_company_configured),
 ):
     svc = InventoryService(db)
@@ -224,7 +228,7 @@ async def upload_ingreso_attachment(
     document_id: int,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_operator_up),
+    _: User = Depends(_approver_roles),
 ):
     doc = await db.get(InventoryDocument, document_id)
     if not doc or doc.doc_type != DocumentType.IN:
@@ -268,7 +272,7 @@ async def upload_ingreso_attachment(
 async def list_ingreso_attachments(
     document_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     doc = await db.get(InventoryDocument, document_id)
     if not doc or doc.doc_type != DocumentType.IN:
@@ -287,7 +291,7 @@ async def download_ingreso_attachment(
     document_id: int,
     attachment_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     attachment = await db.get(InventoryDocumentAttachment, attachment_id)
     if not attachment or attachment.document_id != document_id:
@@ -503,7 +507,7 @@ async def list_ingresos(
     limit: int = 50,
     cursor: int | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     repo = InventoryRepository(db)
     try:
@@ -539,7 +543,7 @@ async def list_ingresos_page(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     try:
         date_from_dt = _parse_document_date_bound(date_from, end_of_day=False)
@@ -568,7 +572,7 @@ async def list_ingresos_page(
 async def get_ingreso(
     document_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     repo = InventoryRepository(db)
     doc = await repo.get_by_id(document_id)
@@ -590,6 +594,10 @@ async def create_egreso(
     current_user: User = Depends(_operator_up),
     _company: None = Depends(require_company_configured),
 ):
+    if _sale_only(current_user) and body.egreso_type != "sale":
+        raise ForbiddenError(
+            detail="El rol Vendedor solo puede registrar egresos de tipo Venta."
+        )
     svc = InventoryService(db)
     return await svc.create_egreso(
         body.egreso_type,
@@ -618,8 +626,10 @@ async def list_egresos(
     limit: int = 50,
     cursor: int | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    current_user: User = Depends(_read_roles),
 ):
+    if _sale_only(current_user):
+        type_ = "sale"
     repo = InventoryRepository(db)
     return await repo.list(
         DocumentType.EG,
@@ -644,8 +654,10 @@ async def list_egresos_page(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    current_user: User = Depends(_read_roles),
 ):
+    if _sale_only(current_user):
+        type_ = "sale"
     try:
         date_from_dt = _parse_document_date_bound(date_from, end_of_day=False)
         date_to_dt = _parse_document_date_bound(date_to, end_of_day=True)
@@ -674,11 +686,13 @@ async def list_egresos_page(
 async def get_egreso(
     document_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    current_user: User = Depends(_read_roles),
 ):
     repo = InventoryRepository(db)
     doc = await repo.get_by_id(document_id)
     if not doc or doc.doc_type != DocumentType.EG:
+        raise NotFoundError("DOCUMENT_NOT_FOUND", "Egreso not found")
+    if _sale_only(current_user) and doc.egreso_type != "sale":
         raise NotFoundError("DOCUMENT_NOT_FOUND", "Egreso not found")
     return doc
 
@@ -758,7 +772,7 @@ async def create_baja(
     body: BajaCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_operator_up),
+    current_user: User = Depends(_approver_roles),
     _company: None = Depends(require_company_configured),
 ):
     svc = InventoryService(db)
@@ -779,7 +793,7 @@ async def generate_baja_auth_code(
     document_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_admin_only),
+    current_user: User = Depends(_approver_roles),
 ):
     svc = InventoryService(db)
     code = await svc.generate_auth_code(
@@ -811,7 +825,7 @@ async def cancel_baja(
     document_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_operator_up),
+    current_user: User = Depends(_approver_roles),
 ):
     svc = InventoryService(db)
     return await svc.cancel_document(
@@ -828,7 +842,7 @@ async def list_bajas(
     limit: int = 50,
     cursor: int | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     repo = InventoryRepository(db)
     return await repo.list(
@@ -852,7 +866,7 @@ async def list_bajas_page(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     repo = InventoryRepository(db)
     items, total = await repo.list_page(
@@ -871,7 +885,7 @@ async def list_bajas_page(
 async def get_baja(
     document_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     repo = InventoryRepository(db)
     doc = await repo.get_by_id(document_id)
@@ -890,7 +904,7 @@ async def get_baja(
 async def list_adjustment_cost_preview(
     product_ids: list[int] = Query(default=[]),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     svc = InventoryService(db)
     return await svc.list_adjustment_increment_cost_previews(product_ids)
@@ -903,7 +917,7 @@ async def create_ajuste(
     body: AjusteCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_operator_up),
+    current_user: User = Depends(_approver_roles),
     _company: None = Depends(require_company_configured),
 ):
     svc = InventoryService(db)
@@ -925,7 +939,7 @@ async def generate_ajuste_auth_code(
     document_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_admin_only),
+    current_user: User = Depends(_approver_roles),
 ):
     svc = InventoryService(db)
     code = await svc.generate_auth_code(
@@ -957,7 +971,7 @@ async def cancel_ajuste(
     document_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_operator_up),
+    current_user: User = Depends(_approver_roles),
 ):
     svc = InventoryService(db)
     return await svc.cancel_document(
@@ -974,7 +988,7 @@ async def list_ajustes(
     limit: int = 50,
     cursor: int | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     repo = InventoryRepository(db)
     return await repo.list(
@@ -998,7 +1012,7 @@ async def list_ajustes_page(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     repo = InventoryRepository(db)
     items, total = await repo.list_page(
@@ -1017,7 +1031,7 @@ async def list_ajustes_page(
 async def get_ajuste(
     document_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_read_roles),
+    _: User = Depends(_approver_roles),
 ):
     repo = InventoryRepository(db)
     doc = await repo.get_by_id(document_id)

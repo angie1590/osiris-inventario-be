@@ -19,7 +19,7 @@ from app.schemas.kardex import KardexEntryResponse, KardexResponse
 
 router = APIRouter()
 
-_read_roles = require_role(UserRole.admin, UserRole.operator, UserRole.supervisor)
+_read_roles = require_role(UserRole.admin, UserRole.supervisor)
 
 
 def _parse_kardex_bound(

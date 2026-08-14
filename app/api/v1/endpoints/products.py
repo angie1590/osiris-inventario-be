@@ -17,7 +17,8 @@ from app.services.product_service import ProductService
 
 router = APIRouter()
 
-_write_roles = require_role(UserRole.admin, UserRole.operator)
+_write_roles = require_role(UserRole.admin, UserRole.supervisor, UserRole.operator)
+_admin_or_supervisor = require_role(UserRole.admin, UserRole.supervisor)
 _read_roles = require_role(UserRole.admin, UserRole.operator, UserRole.supervisor)
 
 
@@ -155,7 +156,7 @@ async def recategorize_products(
     body: RecategorizeRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_write_roles),
+    current_user: User = Depends(_admin_or_supervisor),
 ):
     svc = ProductService(db)
     count = await svc.recategorize(

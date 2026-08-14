@@ -10,8 +10,8 @@ from app.services.remap_service import RemapService
 
 router = APIRouter()
 
-_write_roles = require_role(UserRole.admin, UserRole.operator)
-_read_roles = require_role(UserRole.admin, UserRole.operator, UserRole.supervisor)
+_write_roles = require_role(UserRole.admin, UserRole.supervisor)
+_read_roles = require_role(UserRole.admin, UserRole.supervisor)
 
 
 @router.get("/pending", response_model=RemapPendingResponse)
