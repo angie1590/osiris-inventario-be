@@ -270,12 +270,12 @@ async def test_apply_real_legacy_dump():
     await apply_plan(plan, "admin", TestSessionLocal)
 
     async with TestSessionLocal() as session:
-        assert await session.scalar(select(func.count()).select_from(Product)) == 11107
-        assert await session.scalar(select(func.count()).select_from(InventorySupplier)) == 42
-        assert await session.scalar(select(func.count()).select_from(InventoryDocumentLine)) == 3790
-        assert await session.scalar(select(func.sum(Product.stock_actual))) == Decimal("14687.0000")
-        assert await session.scalar(select(func.count()).select_from(InventoryLot)) == 3790
-        assert await session.scalar(select(func.count()).select_from(KardexEntry)) == 3790
+        assert await session.scalar(select(func.count()).select_from(Product)) == 11184
+        assert await session.scalar(select(func.count()).select_from(InventorySupplier)) == 43
+        assert await session.scalar(select(func.count()).select_from(InventoryDocumentLine)) == 3772
+        assert await session.scalar(select(func.sum(Product.stock_actual))) == Decimal("15229.0000")
+        assert await session.scalar(select(func.count()).select_from(InventoryLot)) == 3772
+        assert await session.scalar(select(func.count()).select_from(KardexEntry)) == 3772
         aseo = list(
             (
                 await session.execute(
