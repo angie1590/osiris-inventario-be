@@ -6,11 +6,14 @@ import pytest
 from sqlalchemy import func, select
 
 from app.core.security import hash_password
+from app.models.audit_log import AuditLog
 from app.models.category import Category
-from app.models.enums import DocumentStatus, ProductStatus, UserRole
+from app.models.company_config import CompanyConfig
+from app.models.enums import AuditAction, DocumentStatus, ProductStatus, UserRole
 from app.models.inventory import InventoryDocument, InventoryDocumentLine, InventorySupplier
 from app.models.kardex import InventoryLot, KardexEntry
 from app.models.product import Product
+from app.models.system_param import SystemParam
 from app.models.user import User
 from scripts.migrate_legacy_dump import (
     apply_plan,
@@ -192,9 +195,29 @@ async def test_apply_plan_flattens_aseo_child_into_parent(tmp_path):
 
 
 async def test_apply_plan_replaces_existing_inventory_data(tmp_path):
+    password_hash = hash_password("ClaveExistente@123")
     async with TestSessionLocal() as session:
-        session.add(User(username="admin", hashed_password=hash_password("Admin@12345!"), full_name="Administrador", role=UserRole.admin, is_active=True))
-        session.add(Category(name="CATEGORIA ANTERIOR"))
+        admin = User(username="admin", hashed_password=password_hash, full_name="Administrador", role=UserRole.admin, is_active=True)
+        session.add(admin)
+        await session.flush()
+        session.add_all(
+            [
+                Category(name="CATEGORIA ANTERIOR"),
+                CompanyConfig(
+                    razon_social="EMPRESA EXISTENTE",
+                    ruc="1790012345001",
+                    email="empresa@example.com",
+                    updated_by=admin.id,
+                ),
+                SystemParam(key="seller_commission_percent", value="7", description="Comision"),
+                AuditLog(
+                    action=AuditAction.LOGIN,
+                    user_id=admin.id,
+                    username=admin.username,
+                    description="Auditoria anterior",
+                ),
+            ]
+        )
         await session.commit()
 
     await apply_plan(build_plan(_dump_with_shoe_child(tmp_path)), "admin", TestSessionLocal)
@@ -204,6 +227,15 @@ async def test_apply_plan_replaces_existing_inventory_data(tmp_path):
         assert [(category.name, category.parent_id) for category in categories] == [("ZAPATO", None)]
         products = list((await session.execute(select(Product))).scalars())
         assert {product.category_id for product in products} == {categories[0].id}
+        admin = (await session.execute(select(User).where(User.username == "admin"))).scalar_one()
+        assert admin.hashed_password == password_hash
+        company = (await session.execute(select(CompanyConfig))).scalar_one()
+        assert (company.razon_social, company.ruc) == ("EMPRESA EXISTENTE", "1790012345001")
+        parameter = (await session.execute(select(SystemParam))).scalar_one()
+        assert (parameter.key, parameter.value) == ("seller_commission_percent", "7")
+        assert await session.scalar(
+            select(func.count()).select_from(AuditLog).where(AuditLog.description == "Auditoria anterior")
+        ) == 1
 
 
 async def test_apply_plan_creates_initial_inventory(tmp_path):

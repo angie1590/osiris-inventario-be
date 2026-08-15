@@ -371,7 +371,6 @@ async def apply_plan(plan: MigrationPlan, actor: str, session_factory: Any = Non
                 text(
                     """
                     TRUNCATE TABLE
-                        audit_logs,
                         inventory_counts,
                         inventory_documents,
                         inventory_suppliers,

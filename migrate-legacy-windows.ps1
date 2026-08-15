@@ -57,8 +57,8 @@ $DryRunReport = Join-Path $ReportDirectory "migration-dry-run-$Timestamp.json"
 $FinalReport = Join-Path $ReportDirectory "migration-applied-$Timestamp.json"
 $RemoteDump = "/tmp/osiris-legacy-dump.sql"
 $RemoteReport = "/tmp/osiris-migration-report.json"
-$RemoteUsersBackup = "/tmp/osiris-migration-users.sql"
-$UsersBackup = Join-Path $env:TEMP "osiris-migration-users-$Timestamp.sql"
+$RemotePreservedBackup = "/tmp/osiris-migration-preserved.sql"
+$PreservedBackup = Join-Path $env:TEMP "osiris-migration-preserved-$Timestamp.sql"
 $ContainerId = ""
 $PostgresContainerId = ""
 
@@ -149,13 +149,14 @@ try {
     throw "No se encontro el contenedor PostgreSQL en ejecucion."
   }
 
-  Write-Host "Guardando usuarios y credenciales actuales..."
+  Write-Host "Guardando usuarios, credenciales y configuracion de empresa..."
   docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
     pg_dump -U $PostgresUser -d $PostgresDb --data-only --table=public.users `
-    --column-inserts --no-owner --no-privileges --file=$RemoteUsersBackup
-  Assert-LastExitCode "No se pudieron guardar los usuarios actuales."
-  docker cp "${PostgresContainerId}:$RemoteUsersBackup" $UsersBackup
-  Assert-LastExitCode "No se pudo copiar el respaldo temporal de usuarios."
+    --table=public.company_config --column-inserts --no-owner --no-privileges `
+    --file=$RemotePreservedBackup
+  Assert-LastExitCode "No se pudieron guardar usuarios y configuracion de empresa."
+  docker cp "${PostgresContainerId}:$RemotePreservedBackup" $PreservedBackup
+  Assert-LastExitCode "No se pudo copiar el respaldo temporal de datos conservados."
 
   Write-Host ""
   Write-Host "Deteniendo API..."
@@ -179,16 +180,16 @@ try {
   $ContainerId = (docker compose --env-file $EnvFile -f $ComposeFile ps -q api).Trim()
   Assert-LastExitCode "No se pudo consultar el nuevo contenedor API."
 
-  Write-Host "Restaurando usuarios y credenciales originales..."
-  docker cp $UsersBackup "${PostgresContainerId}:$RemoteUsersBackup"
-  Assert-LastExitCode "No se pudo copiar el respaldo de usuarios al contenedor PostgreSQL."
+  Write-Host "Restaurando usuarios, credenciales y configuracion de empresa..."
+  docker cp $PreservedBackup "${PostgresContainerId}:$RemotePreservedBackup"
+  Assert-LastExitCode "No se pudo copiar el respaldo conservado al contenedor PostgreSQL."
   docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
     psql -v ON_ERROR_STOP=1 -U $PostgresUser -d $PostgresDb `
-    -c "TRUNCATE TABLE users RESTART IDENTITY CASCADE"
-  Assert-LastExitCode "No se pudo preparar la restauracion de usuarios."
+    -c "TRUNCATE TABLE company_config, users RESTART IDENTITY CASCADE"
+  Assert-LastExitCode "No se pudo preparar la restauracion de datos conservados."
   docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
-    psql -v ON_ERROR_STOP=1 -U $PostgresUser -d $PostgresDb -f $RemoteUsersBackup
-  Assert-LastExitCode "No se pudieron restaurar los usuarios originales."
+    psql -v ON_ERROR_STOP=1 -U $PostgresUser -d $PostgresDb -f $RemotePreservedBackup
+  Assert-LastExitCode "No se pudieron restaurar usuarios y configuracion de empresa."
   docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
     psql -v ON_ERROR_STOP=1 -U $PostgresUser -d $PostgresDb `
     -c "SELECT setval(pg_get_serial_sequence('users','id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM users"
@@ -209,7 +210,7 @@ try {
 
   Write-Host ""
   Write-Host "Migracion completada."
-  Write-Host "Usuarios y claves conservados sin cambios."
+  Write-Host "Usuarios, claves y configuracion de empresa conservados sin cambios."
   Write-Host "Reporte: $FinalReport"
   Write-Host "Respaldos: $BackupDirectory"
 }
@@ -220,8 +221,8 @@ finally {
   }
   if (-not [string]::IsNullOrWhiteSpace($PostgresContainerId)) {
     docker compose --env-file $EnvFile -f $ComposeFile exec -T postgres `
-      rm -f $RemoteUsersBackup 2>$null | Out-Null
+      rm -f $RemotePreservedBackup 2>$null | Out-Null
   }
-  Remove-Item $UsersBackup -Force -ErrorAction SilentlyContinue
+  Remove-Item $PreservedBackup -Force -ErrorAction SilentlyContinue
   Pop-Location
 }
