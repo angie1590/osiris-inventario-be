@@ -48,12 +48,13 @@ async def create_user(
 ):
     _assert_can_manage(current_user, body.role)
     repo = UserRepository(db)
-    existing = await repo.get_by_username(body.username)
+    username = body.username.upper()
+    existing = await repo.get_by_username(username)
     if existing:
-        raise ConflictError("USERNAME_TAKEN", f"Username '{body.username}' is already taken")
+        raise ConflictError("USERNAME_TAKEN", f"Username '{username}' is already taken")
 
     new_user = User(
-        username=body.username,
+        username=username,
         hashed_password=hash_password(DEFAULT_USER_PASSWORD),
         full_name=body.full_name,
         role=body.role,

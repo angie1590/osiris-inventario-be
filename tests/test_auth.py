@@ -29,6 +29,34 @@ async def test_login_wrong_password(client: AsyncClient, db_session: AsyncSessio
 
 
 @pytest.mark.asyncio
+async def test_login_normalizes_username_to_uppercase(client: AsyncClient, db_session: AsyncSession):
+    from app.core.security import hash_password
+    from app.models.user import User
+    from app.models.enums import UserRole
+
+    db_session.add(User(
+        username="UPPERCASE_USER", hashed_password=hash_password("pass123"),
+        full_name="Uppercase", role=UserRole.operator, is_active=True, must_change_password=False,
+    ))
+    await db_session.commit()
+
+    resp = await client.post("/api/v1/auth/login", data={"username": "uppercase_user", "password": "pass123"})
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_create_user_normalizes_username_to_uppercase(client: AsyncClient, admin_token: str):
+    resp = await client.post(
+        "/api/v1/admin/users",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"username": "new_user", "full_name": "New User", "role": "operator"},
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["username"] == "NEW_USER"
+
+
+@pytest.mark.asyncio
 async def test_login_unknown_user(client: AsyncClient):
     resp = await client.post("/api/v1/auth/login", data={"username": "nonexistent", "password": "whatever"})
     assert resp.status_code == 401

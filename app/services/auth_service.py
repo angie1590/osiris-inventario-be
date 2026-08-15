@@ -51,6 +51,7 @@ class AuthService:
     async def login(
         self, username: str, password: str, request: Request | None = None
     ) -> dict:
+        username = username.upper()
         user = await self.user_repo.get_by_username(username)
 
         if not user or not verify_password(password, user.hashed_password):
