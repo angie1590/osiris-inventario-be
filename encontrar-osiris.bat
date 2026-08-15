@@ -117,11 +117,11 @@ $cacheDir = Join-Path $env:LOCALAPPDATA "Osiris"
 $cacheFile = Join-Path $cacheDir "server-url.txt"
 
 try {
-  $candidates = @("http://osiris.local")
+  $candidates = @()
   if (Test-Path $cacheFile) {
     $cachedUrl = (Get-Content $cacheFile -Raw).Trim()
     if ($cachedUrl) {
-      $candidates = @($cachedUrl) + $candidates
+      $candidates = @($cachedUrl)
     }
   }
 
