@@ -63,6 +63,22 @@ DEFAULT_BAJA_REASONS = [
     "sample",
     "other",
 ]
+DEFAULT_PAYMENT_METHODS = [
+    {"name": "EFECTIVO", "active": True, "default": True, "requires_bank": False},
+    {"name": "TRANSFERENCIA", "active": True, "default": False, "requires_bank": True},
+]
+
+
+class PaymentMethodConfig(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    active: bool = True
+    default: bool = False
+    requires_bank: bool = False
+
+
+class BankConfig(BaseModel):
+    name: str = Field(..., min_length=1, max_length=150)
+    active: bool = True
 
 
 def _normalize_sellers(values: list[str] | None) -> list[str]:
@@ -163,6 +179,10 @@ class CompanyConfigCreate(BaseModel):
         default_factory=lambda: DEFAULT_BAJA_REASONS.copy()
     )
     sellers: list[str] = Field(default_factory=list)
+    payment_methods: list[PaymentMethodConfig] = Field(
+        default_factory=lambda: [PaymentMethodConfig(**item) for item in DEFAULT_PAYMENT_METHODS]
+    )
+    banks: list[BankConfig] = Field(default_factory=list)
 
     @field_validator(
         "razon_social", "nombre_comercial", "direccion", "email", mode="before"
@@ -275,6 +295,8 @@ class CompanyConfigUpdate(BaseModel):
     enabled_egreso_types: list[str] | None = None
     enabled_baja_reasons: list[str] | None = None
     sellers: list[str] | None = None
+    payment_methods: list[PaymentMethodConfig] | None = None
+    banks: list[BankConfig] | None = None
 
     @field_validator(
         "razon_social", "nombre_comercial", "direccion", "email", mode="before"
@@ -408,6 +430,8 @@ class CompanyConfigResponse(BaseModel):
     enabled_egreso_types: list[str]
     enabled_baja_reasons: list[str]
     sellers: list[str]
+    payment_methods: list[PaymentMethodConfig]
+    banks: list[BankConfig]
     is_complete: bool
     created_at: datetime
     updated_at: datetime

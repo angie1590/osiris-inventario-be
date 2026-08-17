@@ -583,6 +583,9 @@ class InventoryService:
         request=None,
         commit: bool = True,
         validate_seller_enabled: bool = True,
+        payment_method: str | None = None,
+        bank_name: str | None = None,
+        amount_received: Decimal | None = None,
     ) -> InventoryDocument:
         if not lines_data:
             raise ValidationAppError(
@@ -689,6 +692,69 @@ class InventoryService:
                 "Observaciones es obligatorio cuando el documento es Otro",
             )
 
+        change_amount: Decimal | None = None
+        if egreso_type == "sale":
+            result = await self.db.execute(select(CompanyConfig).limit(1))
+            company = result.scalar_one_or_none()
+            configured_methods = company.payment_methods if company else []
+            methods = [
+                item for item in configured_methods or []
+                if isinstance(item, dict) and item.get("active") and item.get("name")
+            ]
+            method_names = {str(item["name"]).strip().upper() for item in methods}
+            payment_method = (payment_method or "EFECTIVO").strip().upper()
+            if payment_method not in method_names:
+                raise ValidationAppError(
+                    "PAYMENT_METHOD_NOT_ALLOWED",
+                    "La forma de pago no está habilitada para la empresa",
+                )
+
+            selected_bank = (bank_name or "").strip()
+            active_banks = {
+                str(item["name"]).strip().upper()
+                for item in (company.banks if company else []) or []
+                if isinstance(item, dict) and item.get("active") and item.get("name")
+            }
+            selected_method = next(
+                item for item in methods
+                if str(item["name"]).strip().upper() == payment_method
+            )
+            requires_bank = selected_method.get("requires_bank", False) or payment_method == "TRANSFERENCIA"
+            if requires_bank:
+                if not selected_bank:
+                    raise ValidationAppError(
+                        "BANK_REQUIRED", "Banco es obligatorio para transferencias"
+                    )
+                if selected_bank.upper() not in active_banks:
+                    raise ValidationAppError(
+                        "BANK_NOT_ALLOWED", "El banco no está habilitado para la empresa"
+                    )
+                bank_name = selected_bank.upper()
+            else:
+                bank_name = None
+
+            sale_total = sum(
+                (Decimal(str(line.quantity)) * Decimal(str(line.unit_price or 0)) for line in lines_data),
+                Decimal("0"),
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            received = (
+                sale_total
+                if amount_received is None
+                else Decimal(str(amount_received)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            )
+            if received < sale_total:
+                missing = (sale_total - received).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                raise ValidationAppError(
+                    "INSUFFICIENT_PAYMENT",
+                    f"El valor recibido es menor al total de la factura. Faltante: {missing:.2f}",
+                )
+            amount_received = received
+            change_amount = (received - sale_total).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
         year = datetime.now(timezone.utc).year
         number = await self.repo.generate_document_number(DocumentType.EG, year)
 
@@ -700,6 +766,10 @@ class InventoryService:
             purchase_document_type=purchase_document_type,
             purchase_document_number=purchase_document_number,
             seller_name=seller_name,
+            payment_method=payment_method if egreso_type == "sale" else None,
+            bank_name=bank_name if egreso_type == "sale" else None,
+            amount_received=amount_received if egreso_type == "sale" else None,
+            change_amount=change_amount,
             purchase_document_date=purchase_document_date,
             baja_reason=baja_reason,
             adjustment_reason=adjustment_reason,
@@ -1585,6 +1655,9 @@ class InventoryService:
             request,
             commit=False,
             validate_seller_enabled=False,
+            payment_method=original.payment_method,
+            bank_name=original.bank_name,
+            amount_received=original.amount_received,
         )
 
         original.exchange_return_document_id = return_doc.id

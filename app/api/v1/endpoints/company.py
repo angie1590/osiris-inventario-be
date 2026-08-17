@@ -13,6 +13,7 @@ from app.schemas.company import (
     DEFAULT_EGRESO_TYPES,
     DEFAULT_BAJA_REASONS,
     DEFAULT_INGRESO_TYPES,
+    DEFAULT_PAYMENT_METHODS,
 )
 from app.services.company_service import CompanyService, _is_complete
 
@@ -39,6 +40,8 @@ def _to_response(company: CompanyConfig) -> CompanyConfigResponse:
     enabled_egreso_types = _normalize_egreso_types(company.enabled_egreso_types)
     enabled_baja_reasons = company.enabled_baja_reasons or DEFAULT_BAJA_REASONS
     sellers = company.sellers or []
+    payment_methods = company.payment_methods or DEFAULT_PAYMENT_METHODS
+    banks = company.banks or []
     return CompanyConfigResponse(
         id=company.id,
         razon_social=company.razon_social,
@@ -52,6 +55,8 @@ def _to_response(company: CompanyConfig) -> CompanyConfigResponse:
         enabled_egreso_types=enabled_egreso_types,
         enabled_baja_reasons=enabled_baja_reasons,
         sellers=sellers,
+        payment_methods=payment_methods,
+        banks=banks,
         is_complete=_is_complete(company),
         created_at=company.created_at,
         updated_at=company.updated_at,

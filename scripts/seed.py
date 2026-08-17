@@ -52,6 +52,11 @@ INITIAL_PARAMS = [
         "Habilita el código interno alfanumérico de productos (búsqueda y formulario)",
     ),
     (
+        "sale_product_code_display",
+        "internal",
+        "Código mostrado en las líneas de venta: 'internal' o 'barcode'",
+    ),
+    (
         "barcode_required",
         "false",
         "Hace obligatorio el codigo de barras al crear/editar productos",

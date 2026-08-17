@@ -60,7 +60,7 @@ def build_sales_note_pdf(document) -> bytes:
             seller_name = (document.seller_name or "").strip()
             if seller_name:
                 pdf.setFont("Helvetica", 7)
-                pdf.drawCentredString(50 * mm, 5 * mm, seller_name[:30])
+                pdf.drawCentredString(50 * mm, 15 * mm, seller_name[:30])
             pdf.setFont("Helvetica-Bold", 8)
             pdf.drawRightString(97 * mm, 28 * mm, f"{total:.2f}")
         pdf.showPage()

@@ -60,6 +60,10 @@ class InventoryDocument(Base):
     purchase_document_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
     purchase_document_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     seller_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    payment_method: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    bank_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    amount_received: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    change_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     purchase_document_date: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

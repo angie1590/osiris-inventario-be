@@ -40,6 +40,8 @@ class CompanyService:
             enabled_egreso_types=payload.enabled_egreso_types,
             enabled_baja_reasons=payload.enabled_baja_reasons,
             sellers=payload.sellers,
+            payment_methods=[item.model_dump() for item in payload.payment_methods],
+            banks=[item.model_dump() for item in payload.banks],
             updated_by=user.id,
         )
         company = await self.repo.create(company)
@@ -73,6 +75,8 @@ class CompanyService:
             "enabled_egreso_types": company.enabled_egreso_types,
             "enabled_baja_reasons": company.enabled_baja_reasons,
             "sellers": company.sellers,
+            "payment_methods": company.payment_methods,
+            "banks": company.banks,
         }
 
         changes = payload.model_dump(exclude_unset=True)

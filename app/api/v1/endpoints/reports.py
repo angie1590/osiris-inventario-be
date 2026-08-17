@@ -297,6 +297,13 @@ async def _get_bool_param(db: AsyncSession, key: str, default: bool = False) -> 
     return str(param.value).strip().lower() in ("true", "1", "yes")
 
 
+async def _get_text_param(db: AsyncSession, key: str, default: str) -> str:
+    result = await db.execute(select(SystemParam).where(SystemParam.key == key))
+    param = result.scalar_one_or_none()
+    value = str(param.value).strip().lower() if param else ""
+    return value or default
+
+
 async def _get_decimal_param(
     db: AsyncSession,
     key: str,
@@ -325,6 +332,9 @@ async def report_settings(
     return {
         "stock_quantity_mode": await _get_stock_quantity_mode(db),
         "internal_code_enabled": await _get_bool_param(db, "internal_code_enabled", default=True),
+        "sale_product_code_display": (
+            await _get_text_param(db, "sale_product_code_display", default="internal")
+        ),
         "barcode_required": barcode_required,
         # Backward compatibility for older frontends.
         "isbn_required": barcode_required,

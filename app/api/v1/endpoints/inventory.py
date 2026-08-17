@@ -613,6 +613,9 @@ async def create_egreso(
         current_user.id,
         current_user.username,
         request,
+        payment_method=body.payment_method,
+        bank_name=body.bank_name,
+        amount_received=body.amount_received,
     )
 
 

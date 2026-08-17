@@ -199,6 +199,9 @@ class EgresoCreate(BaseModel):
     purchase_document_type: PurchaseDocumentType = "sales_note"
     purchase_document_number: str | None = Field(None, max_length=100)
     seller_name: str | None = Field(None, max_length=200)
+    payment_method: str | None = Field(None, max_length=50)
+    bank_name: str | None = Field(None, max_length=150)
+    amount_received: Decimal | None = Field(None, ge=0)
     purchase_document_date: datetime | None = None
     baja_reason: BajaReason | None = None
     adjustment_reason: AdjustmentReason | None = None
@@ -506,6 +509,10 @@ class DocumentResponse(BaseModel):
     purchase_document_type: PurchaseDocumentType | None
     purchase_document_number: str | None
     seller_name: str | None
+    payment_method: str | None = None
+    bank_name: str | None = None
+    amount_received: Decimal | None = None
+    change_amount: Decimal | None = None
     purchase_document_date: datetime | None
     reference: str | None
     notes: str | None
