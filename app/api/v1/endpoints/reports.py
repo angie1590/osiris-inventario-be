@@ -6,14 +6,14 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_company_configured, require_role
 from app.core.exceptions import ValidationAppError
-from app.models.enums import DocumentType, UserRole
+from app.models.enums import DocumentStatus, DocumentType, UserRole
 from app.models.inventory import InventoryDocument, InventoryDocumentLine
 from app.models.kardex import KardexEntry
 from app.models.product import Product
@@ -783,6 +783,118 @@ async def report_ventas(
         "commissions_by_month": commissions_by_month_rows,
         "monthly_sales": monthly_sales_rows,
         "quarterly_summary": quarterly_rows,
+    }
+
+
+@router.get("/cierre-dia")
+async def report_cierre_dia(
+    date_: str = Query(..., alias="date"),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+    _company: None = Depends(require_company_configured),
+):
+    date_from_dt, date_to_dt = _resolve_report_range(date_, date_)
+    result = await db.execute(
+        select(InventoryDocument)
+        .where(
+            InventoryDocument.status == DocumentStatus.approved,
+            InventoryDocument.created_at >= date_from_dt,
+            InventoryDocument.created_at <= date_to_dt,
+            or_(
+                and_(
+                    InventoryDocument.doc_type == DocumentType.EG,
+                    InventoryDocument.ingreso_type == "sale",
+                ),
+                and_(
+                    InventoryDocument.doc_type == DocumentType.IN,
+                    InventoryDocument.ingreso_type == "customer_return",
+                        InventoryDocument.exchange_original_document_id.is_(None),
+                ),
+            ),
+        )
+        .order_by(InventoryDocument.created_at.desc(), InventoryDocument.id.desc())
+    )
+    documents = list(result.scalars().unique().all())
+    document_ids = [document.id for document in documents]
+    amounts: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+    if document_ids:
+        lines_result = await db.execute(
+            select(
+                InventoryDocumentLine.document_id,
+                InventoryDocumentLine.quantity,
+                InventoryDocumentLine.unit_price,
+                InventoryDocumentLine.unit_price_base,
+                InventoryDocumentLine.discount_type,
+                InventoryDocumentLine.discount_value,
+            ).where(InventoryDocumentLine.document_id.in_(document_ids))
+        )
+        for document_id, quantity, unit_price, unit_price_base, discount_type, discount_value in lines_result.all():
+            amounts[int(document_id)] += _sale_line_amount(
+                Decimal(str(quantity or 0)),
+                Decimal(str(unit_price or 0)),
+                Decimal(str(unit_price_base)) if unit_price_base is not None else None,
+                discount_type,
+                Decimal(str(discount_value)) if discount_value is not None else None,
+            )
+
+    cash_total = Decimal("0")
+    transfer_total = Decimal("0")
+    unclassified_total = Decimal("0")
+    transfer_by_bank: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    sales_total = Decimal("0")
+    returns_total = Decimal("0")
+    sales_count = 0
+    returns_count = 0
+    rows = []
+    for document in documents:
+        total = amounts[document.id].quantize(Decimal("0.01"))
+        is_sale = document.doc_type == DocumentType.EG and document.ingreso_type == "sale"
+        if is_sale:
+            sales_count += 1
+            sales_total += total
+            payment_method = (document.payment_method or "").strip().upper()
+            if payment_method == "EFECTIVO":
+                cash_total += total
+            elif payment_method == "TRANSFERENCIA":
+                transfer_total += total
+                bank = (document.bank_name or "SIN BANCO").strip().upper() or "SIN BANCO"
+                transfer_by_bank[bank] += total
+        else:
+            returns_count += 1
+            returns_total += total
+
+        rows.append(
+            {
+                "id": document.id,
+                "kind": "sale" if is_sale else "customer_return",
+                "kind_label": "Venta" if is_sale else "Devolución de cliente",
+                "created_at": document.created_at.isoformat(),
+                "number": document.number,
+                "total": float(total),
+                "payment_method": document.payment_method,
+                "bank_name": document.bank_name,
+            }
+        )
+
+    unclassified_total = sales_total - cash_total - transfer_total
+    net_total = sales_total - returns_total
+    return {
+        "date": date_,
+        "summary": {
+            "sales_count": sales_count,
+            "sales_total": float(sales_total),
+            "cash_total": float(cash_total),
+            "transfer_total": float(transfer_total),
+            "unclassified_total": float(unclassified_total),
+            "returns_count": returns_count,
+            "returns_total": float(returns_total),
+            "net_total": float(net_total),
+        },
+        "transfers_by_bank": [
+            {"bank_name": bank, "total": float(total)}
+            for bank, total in sorted(transfer_by_bank.items())
+        ],
+        "documents": rows,
     }
 
 
