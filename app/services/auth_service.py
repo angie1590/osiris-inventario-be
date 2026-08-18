@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.exceptions import UnauthorizedError, ValidationAppError
+from app.core.exceptions import ConflictError, UnauthorizedError, ValidationAppError
 from app.core.redis import get_redis
 from app.core.security import (
     DEFAULT_USER_PASSWORD,
@@ -48,6 +48,18 @@ class AuthService:
             return default_value
         return value if value > 0 else default_value
 
+    async def _revoke_active_sessions(self, user_id: int) -> None:
+        redis = await get_redis()
+        async for session_key in redis.scan_iter(match=f"session:{user_id}:*"):
+            token_suffix = session_key.rsplit(":", 1)[-1]
+            await redis.setex(
+                f"session-revoked:{user_id}:{token_suffix}",
+                settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60 + 60,
+                "1",
+            )
+            await redis.delete(session_key)
+        await self.user_repo.revoke_all_refresh_tokens(user_id)
+
     async def login(
         self, username: str, password: str, request: Request | None = None
     ) -> dict:
@@ -81,6 +93,14 @@ class AuthService:
             )
             await self.db.commit()
             raise UnauthorizedError("ACCOUNT_INACTIVE", "Account is inactive")
+
+        if await self.user_repo.has_active_refresh_tokens(user.id):
+            await self._revoke_active_sessions(user.id)
+            await self.db.commit()
+            raise ConflictError(
+                "SESSION_ALREADY_ACTIVE",
+                "La sesión fue cerrada en todos los dispositivos. Vuelve a iniciar sesión.",
+            )
 
         access_token = create_access_token(
             user.id, extra_claims={"role": user.role.value, "username": user.username}

@@ -45,6 +45,42 @@ async def test_login_normalizes_username_to_uppercase(client: AsyncClient, db_se
 
 
 @pytest.mark.asyncio
+async def test_second_login_revokes_all_sessions(client: AsyncClient, db_session: AsyncSession):
+    from app.core.security import hash_password
+    from app.models.enums import UserRole
+    from app.models.user import User
+
+    db_session.add(User(
+        username="single_session_user", hashed_password=hash_password("pass123"),
+        full_name="Single Session", role=UserRole.operator, is_active=True, must_change_password=False,
+    ))
+    await db_session.commit()
+
+    first_login = await client.post(
+        "/api/v1/auth/login", data={"username": "single_session_user", "password": "pass123"}
+    )
+    assert first_login.status_code == 200
+
+    second_login = await client.post(
+        "/api/v1/auth/login", data={"username": "single_session_user", "password": "pass123"}
+    )
+    assert second_login.status_code == 409
+    assert second_login.json()["code"] == "SESSION_ALREADY_ACTIVE"
+
+    old_session = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {first_login.json()['access_token']}"},
+    )
+    assert old_session.status_code == 401
+    assert old_session.json()["code"] == "SESSION_REPLACED"
+
+    next_login = await client.post(
+        "/api/v1/auth/login", data={"username": "single_session_user", "password": "pass123"}
+    )
+    assert next_login.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_create_user_normalizes_username_to_uppercase(client: AsyncClient, admin_token: str):
     resp = await client.post(
         "/api/v1/admin/users",

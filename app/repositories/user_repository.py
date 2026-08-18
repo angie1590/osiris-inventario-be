@@ -45,6 +45,15 @@ class UserRepository:
         )
         return result.scalar_one_or_none()
 
+    async def has_active_refresh_tokens(self, user_id: int) -> bool:
+        result = await self.db.execute(
+            select(RefreshToken.id).where(
+                RefreshToken.user_id == user_id,
+                RefreshToken.revoked_at.is_(None),
+            ).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def revoke_refresh_token(self, token_id: int) -> None:
         await self.db.execute(
             update(RefreshToken)

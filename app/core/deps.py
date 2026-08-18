@@ -41,6 +41,10 @@ async def get_current_user(
     session_key = f"session:{user_id}:{token[-16:]}"
     session_value = await redis.get(session_key)
     if session_value is None:
+        if await redis.get(f"session-revoked:{user_id}:{token[-16:]}"):
+            raise UnauthorizedError(
+                "SESSION_REPLACED", "Session was closed after another login attempt"
+            )
         raise UnauthorizedError("SESSION_EXPIRED", "Session expired due to inactivity")
 
     # Refresh inactivity TTL on every authenticated request
