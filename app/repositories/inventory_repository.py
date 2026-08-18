@@ -100,6 +100,7 @@ class InventoryRepository:
             .where(InventoryDocument.id == document.id)
             .options(
                 selectinload(InventoryDocument.supplier),
+                selectinload(InventoryDocument.customer),
                 selectinload(InventoryDocument.attachments),
                 selectinload(InventoryDocument.lines).selectinload(
                     InventoryDocumentLine.product
@@ -114,6 +115,7 @@ class InventoryRepository:
             .where(InventoryDocument.id == document_id)
             .options(
                 selectinload(InventoryDocument.supplier),
+                selectinload(InventoryDocument.customer),
                 selectinload(InventoryDocument.attachments),
                 selectinload(InventoryDocument.lines).selectinload(
                     InventoryDocumentLine.product
@@ -128,6 +130,7 @@ class InventoryRepository:
             .where(InventoryDocument.number == number)
             .options(
                 selectinload(InventoryDocument.supplier),
+                selectinload(InventoryDocument.customer),
                 selectinload(InventoryDocument.attachments),
                 selectinload(InventoryDocument.lines).selectinload(
                     InventoryDocumentLine.product
@@ -152,6 +155,7 @@ class InventoryRepository:
             select(InventoryDocument)
             .options(
                 selectinload(InventoryDocument.supplier),
+                selectinload(InventoryDocument.customer),
                 selectinload(InventoryDocument.attachments),
                 selectinload(InventoryDocument.lines).selectinload(
                     InventoryDocumentLine.product
@@ -242,6 +246,7 @@ class InventoryRepository:
         result = await self.db.execute(
             base.options(
                 selectinload(InventoryDocument.supplier),
+                selectinload(InventoryDocument.customer),
                 selectinload(InventoryDocument.attachments),
                 selectinload(InventoryDocument.lines).selectinload(
                     InventoryDocumentLine.product

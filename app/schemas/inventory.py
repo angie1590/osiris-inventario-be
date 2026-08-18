@@ -132,6 +132,26 @@ def _is_valid_ecuador_cedula(value: str) -> bool:
     return check == int(value[9])
 
 
+def _normalize_upper(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return str(value).strip().upper()
+
+
+def _normalize_lower(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return str(value).strip().lower()
+
+
+def _validate_identification(value: str, doc_type: str | None) -> str:
+    if doc_type == "ruc" and not _is_valid_ecuador_ruc(value):
+        raise ValueError("RUC inválido")
+    if doc_type == "cedula" and not _is_valid_ecuador_cedula(value):
+        raise ValueError("Cédula inválida")
+    return value
+
+
 class DocumentLineCreate(BaseModel):
     product_id: int
     quantity: Decimal = Field(..., gt=0)
@@ -196,6 +216,7 @@ class IngresoCreate(BaseModel):
 
 class EgresoCreate(BaseModel):
     egreso_type: EgresoType = "sale"
+    customer_id: int | None = None
     purchase_document_type: PurchaseDocumentType = "sales_note"
     purchase_document_number: str | None = Field(None, max_length=100)
     seller_name: str | None = Field(None, max_length=200)
@@ -486,6 +507,71 @@ class SupplierResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CustomerCreate(BaseModel):
+    identification_type: Literal["ruc", "cedula", "passport"] = "cedula"
+    identification_number: str = Field(..., min_length=1, max_length=20)
+    name: str = Field(..., min_length=1, max_length=200)
+    address: str | None = Field(None, max_length=300)
+    phone: str | None = Field(None, min_length=7, max_length=15, pattern=r"^\d*$")
+
+    @field_validator(
+        "identification_number", "name", "address", "phone", mode="before"
+    )
+    @classmethod
+    def _upper(cls, value: str | None) -> str | None:
+        return _normalize_upper(value)
+
+    @field_validator("identification_type", mode="before")
+    @classmethod
+    def _lower(cls, value: str | None) -> str | None:
+        return _normalize_lower(value)
+
+    @field_validator("identification_number")
+    @classmethod
+    def _validate_identification_number(cls, value: str, info) -> str:
+        return _validate_identification(value, info.data.get("identification_type"))
+
+
+class CustomerUpdate(BaseModel):
+    identification_type: Literal["ruc", "cedula", "passport"] | None = None
+    identification_number: str | None = Field(None, min_length=1, max_length=20)
+    name: str | None = Field(None, min_length=1, max_length=200)
+    address: str | None = Field(None, max_length=300)
+    phone: str | None = Field(None, min_length=7, max_length=15, pattern=r"^\d*$")
+    is_active: bool | None = None
+
+    @field_validator(
+        "identification_number", "name", "address", "phone", mode="before"
+    )
+    @classmethod
+    def _upper(cls, value: str | None) -> str | None:
+        return _normalize_upper(value)
+
+    @field_validator("identification_type", mode="before")
+    @classmethod
+    def _lower(cls, value: str | None) -> str | None:
+        return _normalize_lower(value)
+
+    @field_validator("identification_number")
+    @classmethod
+    def _validate_identification_number(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_identification(value, info.data.get("identification_type"))
+
+
+class CustomerResponse(BaseModel):
+    id: int
+    identification_type: Literal["ruc", "cedula", "passport"]
+    identification_number: str
+    name: str
+    address: str | None
+    phone: str | None
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DocumentAttachmentResponse(BaseModel):
     id: int
     original_name: str
@@ -506,6 +592,7 @@ class DocumentResponse(BaseModel):
     baja_reason: str | None = None
     adjustment_reason: str | None = None
     supplier_id: int | None
+    customer_id: int | None = None
     purchase_document_type: PurchaseDocumentType | None
     purchase_document_number: str | None
     seller_name: str | None
@@ -529,6 +616,7 @@ class DocumentResponse(BaseModel):
     authorized_at: datetime | None
     created_at: datetime
     supplier: SupplierResponse | None = None
+    customer: CustomerResponse | None = None
     attachments: list[DocumentAttachmentResponse] = []
     lines: list[DocumentLineResponse] = []
 

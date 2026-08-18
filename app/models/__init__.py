@@ -11,6 +11,7 @@ from app.models.inventory import (  # noqa: F401
 	DocumentSequence,
 	InventoryCount,
 	InventoryCountLine,
+	InventoryCustomer,
 	InventoryDocument,
 	InventoryDocumentAttachment,
 	InventoryDocumentLine,

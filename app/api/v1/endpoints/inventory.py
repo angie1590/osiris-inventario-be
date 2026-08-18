@@ -12,9 +12,10 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_company_configured, require_role
 from app.core.exceptions import ForbiddenError, NotFoundError, ValidationAppError
-from app.models.enums import DocumentStatus, DocumentType, UserRole
+from app.models.enums import AuditAction, DocumentStatus, DocumentType, UserRole
 from app.models.inventory import (
     InventoryCount,
+    InventoryCustomer,
     InventoryDocument,
     InventoryDocumentAttachment,
     InventorySupplier,
@@ -26,6 +27,9 @@ from app.schemas.inventory import (
     ApproveRequest,
     AuthCodeRequest,
     BajaCreate,
+    CustomerCreate,
+    CustomerResponse,
+    CustomerUpdate,
     DocumentResponse,
     DocumentPageResponse,
     DocumentAttachmentResponse,
@@ -497,6 +501,163 @@ async def delete_supplier(
     return None
 
 
+@router.get("/customers", response_model=list[CustomerResponse])
+async def list_customers(
+    active_only: bool = True,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(_read_roles),
+):
+    q = select(InventoryCustomer).order_by(InventoryCustomer.name.asc())
+    if active_only:
+        q = q.where(InventoryCustomer.is_active.is_(True))
+    result = await db.execute(q)
+    return list(result.scalars().all())
+
+
+def _customer_snapshot(customer: InventoryCustomer) -> dict:
+    return {
+        "identification_type": customer.identification_type,
+        "identification_number": customer.identification_number,
+        "name": customer.name,
+        "address": customer.address,
+        "phone": customer.phone,
+        "is_active": customer.is_active,
+    }
+
+
+@router.post(
+    "/customers", response_model=CustomerResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_customer(
+    body: CustomerCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_operator_up),
+):
+    existing = await db.execute(
+        select(InventoryCustomer).where(
+            InventoryCustomer.identification_type == body.identification_type,
+            InventoryCustomer.identification_number == body.identification_number,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise ValidationAppError(
+            "CUSTOMER_IDENTIFICATION_EXISTS",
+            "La identificación ya está registrada",
+        )
+
+    customer = InventoryCustomer(
+        identification_type=body.identification_type,
+        identification_number=body.identification_number,
+        name=body.name,
+        address=body.address,
+        phone=body.phone,
+    )
+    db.add(customer)
+    await db.commit()
+    await db.refresh(customer)
+
+    audit = AuditService(db)
+    await audit.log(
+        AuditAction.CREATE,
+        user_id=current_user.id,
+        username=current_user.username,
+        entity_type="inventory_customer",
+        entity_id=customer.id,
+        new=_customer_snapshot(customer),
+        request=request,
+    )
+    await db.commit()
+    return customer
+
+
+@router.patch("/customers/{customer_id}", response_model=CustomerResponse)
+async def update_customer(
+    customer_id: int,
+    body: CustomerUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_operator_up),
+):
+    customer = await db.get(InventoryCustomer, customer_id)
+    if not customer:
+        raise NotFoundError("CUSTOMER_NOT_FOUND", "Cliente no encontrado")
+
+    payload = body.model_dump(exclude_unset=True)
+    next_type = payload.get("identification_type", customer.identification_type)
+    next_number = payload.get(
+        "identification_number", customer.identification_number
+    )
+
+    if (
+        next_type != customer.identification_type
+        or next_number != customer.identification_number
+    ):
+        existing = await db.execute(
+            select(InventoryCustomer).where(
+                InventoryCustomer.id != customer_id,
+                InventoryCustomer.identification_type == next_type,
+                InventoryCustomer.identification_number == next_number,
+            )
+        )
+        if existing.scalar_one_or_none():
+            raise ValidationAppError(
+                "CUSTOMER_IDENTIFICATION_EXISTS",
+                "La identificación ya está registrada",
+            )
+
+    previous = _customer_snapshot(customer)
+    for key, value in payload.items():
+        setattr(customer, key, value)
+
+    await db.commit()
+    await db.refresh(customer)
+
+    audit = AuditService(db)
+    await audit.log(
+        AuditAction.UPDATE,
+        user_id=current_user.id,
+        username=current_user.username,
+        entity_type="inventory_customer",
+        entity_id=customer.id,
+        previous=previous,
+        new=_customer_snapshot(customer),
+        request=request,
+    )
+    await db.commit()
+    return customer
+
+
+@router.delete("/customers/{customer_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_customer(
+    customer_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_operator_up),
+):
+    customer = await db.get(InventoryCustomer, customer_id)
+    if not customer:
+        raise NotFoundError("CUSTOMER_NOT_FOUND", "Cliente no encontrado")
+
+    previous = _customer_snapshot(customer)
+    customer.is_active = False
+    await db.commit()
+
+    audit = AuditService(db)
+    await audit.log(
+        AuditAction.DELETE,
+        user_id=current_user.id,
+        username=current_user.username,
+        entity_type="inventory_customer",
+        entity_id=customer.id,
+        previous=previous,
+        new=_customer_snapshot(customer),
+        request=request,
+    )
+    await db.commit()
+    return None
+
+
 @router.get("/ingresos", response_model=list[DocumentResponse])
 async def list_ingresos(
     date_from: str | None = None,
@@ -616,6 +777,7 @@ async def create_egreso(
         payment_method=body.payment_method,
         bank_name=body.bank_name,
         amount_received=body.amount_received,
+        customer_id=body.customer_id,
     )
 
 

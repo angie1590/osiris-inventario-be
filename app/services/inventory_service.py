@@ -18,6 +18,7 @@ from app.models.inventory import (
     AuthorizationCode,
     InventoryCount,
     InventoryCountLine,
+    InventoryCustomer,
     InventoryDocument,
     InventoryDocumentLine,
     InventorySupplier,
@@ -586,6 +587,7 @@ class InventoryService:
         payment_method: str | None = None,
         bank_name: str | None = None,
         amount_received: Decimal | None = None,
+        customer_id: int | None = None,
     ) -> InventoryDocument:
         if not lines_data:
             raise ValidationAppError(
@@ -755,6 +757,15 @@ class InventoryService:
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
 
+        if egreso_type != "sale":
+            customer_id = None
+        elif customer_id:
+            customer = await self.db.get(InventoryCustomer, customer_id)
+            if not customer or not customer.is_active:
+                raise ValidationAppError(
+                    "CUSTOMER_NOT_FOUND", f"Customer {customer_id} not found"
+                )
+
         year = datetime.now(timezone.utc).year
         number = await self.repo.generate_document_number(DocumentType.EG, year)
 
@@ -763,6 +774,7 @@ class InventoryService:
             doc_type=DocumentType.EG,
             status=DocumentStatus.approved,
             ingreso_type=egreso_type,
+            customer_id=customer_id,
             purchase_document_type=purchase_document_type,
             purchase_document_number=purchase_document_number,
             seller_name=seller_name,

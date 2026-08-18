@@ -29,6 +29,13 @@ def build_sales_note_pdf(document) -> bytes:
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=(110 * mm, 160 * mm))
     customer = _customer_data(document.notes)
+    if getattr(document, "customer", None):
+        customer = {
+            "name": document.customer.name,
+            "ruc": document.customer.identification_number,
+            "phone": document.customer.phone or "",
+            "address": document.customer.address or "",
+        }
     document_date = document.purchase_document_date
     if document_date is None:
         raise ValueError("Sales note document date is required")

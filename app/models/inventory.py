@@ -57,6 +57,11 @@ class InventoryDocument(Base):
         nullable=True,
         index=True,
     )
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inventory_customers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     purchase_document_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
     purchase_document_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     seller_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -99,6 +104,7 @@ class InventoryDocument(Base):
     creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])  # type: ignore[name-defined]
     authorizer: Mapped["User | None"] = relationship("User", foreign_keys=[authorized_by])  # type: ignore[name-defined]
     supplier: Mapped["InventorySupplier | None"] = relationship("InventorySupplier")
+    customer: Mapped["InventoryCustomer | None"] = relationship("InventoryCustomer")
     lines: Mapped[list["InventoryDocumentLine"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
@@ -155,6 +161,30 @@ class InventorySupplier(Base):
     @identification_number.setter
     def identification_number(self, value: str) -> None:
         self.ruc = value
+
+
+class InventoryCustomer(Base):
+    __tablename__ = "inventory_customers"
+    __table_args__ = (
+        UniqueConstraint(
+            "identification_type",
+            "identification_number",
+            name="uq_inventory_customer_identification",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    identification_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="cedula", index=True
+    )
+    identification_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    address: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class InventoryCount(Base):
