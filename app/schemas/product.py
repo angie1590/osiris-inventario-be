@@ -38,7 +38,7 @@ def _is_valid_image_url(value: str) -> bool:
 
 
 class ProductBase(BaseModel):
-    isbn: str | None = Field(None, min_length=10, max_length=32)
+    isbn: str | None = Field(None, min_length=5, max_length=32)
     codigo_interno: str | None = Field(None, max_length=50)
     name: str | None = Field(None, min_length=1, max_length=200)
     description: str | None = Field(None, max_length=1000)

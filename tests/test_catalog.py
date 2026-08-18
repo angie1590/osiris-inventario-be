@@ -1329,3 +1329,35 @@ async def test_isbn_required_param(client: AsyncClient, admin_token: str, db_ses
         headers=h,
     )
     assert ok.status_code == 201, ok.text
+
+
+@pytest.mark.asyncio
+async def test_barcode_min_length_5(client: AsyncClient, admin_token: str):
+    h = {"Authorization": f"Bearer {admin_token}"}
+    cat = (
+        await client.post("/api/v1/categories", json={"name": "BarCodeMinCat"}, headers=h)
+    ).json()
+
+    bad = await client.post(
+        "/api/v1/products",
+        json={
+            "name": "ShortBarcode",
+            "category_id": cat["id"],
+            "pvp": "5.00",
+            "isbn": "1234",
+        },
+        headers=h,
+    )
+    assert bad.status_code == 422, bad.text
+
+    ok = await client.post(
+        "/api/v1/products",
+        json={
+            "name": "ValidBarcode",
+            "category_id": cat["id"],
+            "pvp": "5.00",
+            "isbn": "12345",
+        },
+        headers=h,
+    )
+    assert ok.status_code == 201, ok.text
