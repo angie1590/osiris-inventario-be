@@ -1012,6 +1012,55 @@ async def test_attribute_blocked_when_ancestor_has_it(
 
 
 @pytest.mark.asyncio
+async def test_confirmed_category_move_resets_product_attributes(
+    client: AsyncClient, admin_token: str
+):
+    h = {"Authorization": f"Bearer {admin_token}"}
+    source = (await client.post("/api/v1/categories", json={"name": "Move Source"}, headers=h)).json()
+    target = (await client.post("/api/v1/categories", json={"name": "Move Target"}, headers=h)).json()
+
+    for category_id in (source["id"], target["id"]):
+        response = await client.post(
+            f"/api/v1/categories/{category_id}/attributes",
+            json={"name": "Color", "data_type": "text"},
+            headers=h,
+        )
+        assert response.status_code == 201
+
+    product = await client.post(
+        "/api/v1/products",
+        json={
+            "name": "Product To Move",
+            "category_id": source["id"],
+            "pvp": "5.00",
+            "custom_attributes": {"Color": "red"},
+        },
+        headers=h,
+    )
+    assert product.status_code == 201
+
+    blocked = await client.patch(
+        f"/api/v1/categories/{source['id']}",
+        json={"parent_id": target["id"]},
+        headers=h,
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "CATEGORY_MOVE_DUPLICATE_ATTRIBUTES"
+
+    moved = await client.patch(
+        f"/api/v1/categories/{source['id']}",
+        json={"parent_id": target["id"], "reset_custom_attributes": True},
+        headers=h,
+    )
+    assert moved.status_code == 200
+    assert moved.json()["parent_id"] == target["id"]
+
+    product_after = await client.get(f"/api/v1/products/{product.json()['id']}", headers=h)
+    assert product_after.status_code == 200
+    assert product_after.json()["custom_attributes"] is None
+
+
+@pytest.mark.asyncio
 async def test_delete_category_blocked_if_product_has_stock(
     client: AsyncClient, admin_token: str, db_session
 ):

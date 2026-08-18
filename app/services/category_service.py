@@ -171,6 +171,7 @@ class CategoryService:
         request=None,
         parent_id: int | None = None,
         parent_provided: bool = False,
+        reset_custom_attributes: bool = False,
     ) -> Category:
         cat = await self.repo.get_by_id(category_id)
         if not cat or not cat.is_active:
@@ -178,8 +179,13 @@ class CategoryService:
 
         previous = {"name": cat.name, "description": cat.description, "parent_id": cat.parent_id}
 
-        if parent_provided and parent_id != cat.parent_id:
-            await self._validate_move(cat, parent_id)
+        parent_changed = parent_provided and parent_id != cat.parent_id
+        if parent_changed:
+            await self._validate_move(cat, parent_id, allow_attribute_duplicates=reset_custom_attributes)
+            if reset_custom_attributes:
+                await self.repo.clear_custom_attributes_in_categories(
+                    await self.repo.get_descendant_category_ids(cat.id)
+                )
             cat.parent_id = parent_id
 
         if name is not None:
@@ -198,7 +204,12 @@ class CategoryService:
         await self.db.refresh(cat)
         return cat
 
-    async def _validate_move(self, cat: Category, new_parent_id: int | None) -> None:
+    async def _validate_move(
+        self,
+        cat: Category,
+        new_parent_id: int | None,
+        allow_attribute_duplicates: bool = False,
+    ) -> None:
         """Validate re-parenting a category: no cycles, valid parent, and no
         duplicate attributes introduced into the inheritance chain."""
         if new_parent_id is None:
@@ -221,6 +232,9 @@ class CategoryService:
 
         # After the move, the whole subtree inherits the new parent's chain.
         # Block if any attribute name collides between the two.
+        if allow_attribute_duplicates:
+            return
+
         subtree = await self.repo.active_attribute_names_in_subtree(cat.id)
         chain = {
             item["attr"].name.strip().lower()

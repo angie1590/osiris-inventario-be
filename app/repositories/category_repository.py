@@ -69,6 +69,17 @@ class CategoryRepository:
         )
         return result.rowcount or 0
 
+    async def clear_custom_attributes_in_categories(self, category_ids: list[int]) -> int:
+        from app.models.product import Product
+        if not category_ids:
+            return 0
+        result = await self.db.execute(
+            update(Product)
+            .where(Product.category_id.in_(category_ids), Product.custom_attributes.is_not(None))
+            .values(custom_attributes=None)
+        )
+        return result.rowcount or 0
+
     async def list_default_categories_with_products(self) -> list[tuple[Category, int]]:
         """Return (default_category, active_product_count) for active default
         categories that still hold active products (pending recategorization)."""

@@ -143,10 +143,14 @@ class ProductService:
         return cover, normalized
 
     async def _validate_custom_attributes(
-        self, category_id: int, custom_attributes: dict[str, Any] | None
+        self,
+        category_id: int,
+        custom_attributes: dict[str, Any] | None,
+        current_attributes: dict[str, Any] | None = None,
     ) -> None:
         inherited = await self.cat_repo.get_inherited_attributes(category_id)
         provided = custom_attributes or {}
+        current = current_attributes or {}
 
         for item in inherited:
             attr = item["attr"]
@@ -165,7 +169,9 @@ class ProductService:
                         if attr.catalog_id
                         else []
                     )
-                    if str(value) not in allowed:
+                    if str(value) not in allowed and str(value) != str(
+                        current.get(attr.name, "")
+                    ):
                         raise ValidationAppError(
                             "INVALID_ATTRIBUTE_VALUE",
                             f"'{value}' no es un valor válido del catálogo para el atributo '{attr.name}'.",
@@ -389,7 +395,7 @@ class ProductService:
             photo_cover, normalized_photos = await self._validate_gallery_urls(photo, None)
         if custom_attributes is not None:
             await self._validate_custom_attributes(
-                target_category_id, custom_attributes
+                target_category_id, custom_attributes, p.custom_attributes
             )
 
         old_category = await self.cat_repo.get_by_id(old_category_id)

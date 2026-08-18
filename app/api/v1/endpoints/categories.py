@@ -77,6 +77,7 @@ async def update_category(
         request,
         parent_id=body.parent_id,
         parent_provided="parent_id" in body.model_fields_set,
+        reset_custom_attributes=body.reset_custom_attributes,
     )
 
 
