@@ -204,7 +204,7 @@ async def create_ingreso(
     body: IngresoCreate,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(_approver_roles),
+    current_user: User = Depends(_operator_up),
     _company: None = Depends(require_company_configured),
 ):
     svc = InventoryService(db)
@@ -220,6 +220,7 @@ async def create_ingreso(
         current_user.id,
         current_user.username,
         request,
+        actor_role=current_user.role,
     )
 
 

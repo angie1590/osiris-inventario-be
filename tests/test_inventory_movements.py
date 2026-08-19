@@ -77,6 +77,35 @@ async def test_ingreso_increases_stock(
 
 
 @pytest.mark.asyncio
+async def test_operator_can_create_purchase_but_not_other_ingreso(
+    client: AsyncClient, admin_token: str, operator_token: str
+):
+    prod_id = await _create_product(client, admin_token, operator_token, "Operator Purchase")
+    purchase = await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "ingreso_type": "purchase",
+            "purchase_document_type": "invoice",
+            "lines": [{"product_id": prod_id, "quantity": "2", "unit_cost": "5"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert purchase.status_code == 201
+
+    blocked = await client.post(
+        "/api/v1/inventory/ingresos",
+        json={
+            "ingreso_type": "initial_inventory",
+            "purchase_document_type": "inventory_act",
+            "lines": [{"product_id": prod_id, "quantity": "1", "unit_cost": "5"}],
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert blocked.status_code == 422
+    assert blocked.json()["code"] == "INGRESO_TYPE_FORBIDDEN"
+
+
+@pytest.mark.asyncio
 async def test_egreso_decreases_stock(
     client: AsyncClient, admin_token: str, operator_token: str
 ):

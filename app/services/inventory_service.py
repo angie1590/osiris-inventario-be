@@ -483,7 +483,13 @@ class InventoryService:
         actor_id: int,
         actor_name: str,
         request=None,
+        actor_role: UserRole | None = None,
     ) -> InventoryDocument:
+        if actor_role == UserRole.operator and ingreso_type != "purchase":
+            raise ValidationAppError(
+                "INGRESO_TYPE_FORBIDDEN",
+                "El vendedor solo puede registrar ingresos de tipo Compra.",
+            )
         if not lines_data:
             raise ValidationAppError(
                 "DOCUMENT_REQUIRES_LINES", "Document must have at least one line"
