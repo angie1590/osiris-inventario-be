@@ -69,6 +69,8 @@ class InventoryDocument(Base):
     bank_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     amount_received: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     change_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    outstanding_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    credit_applied_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     purchase_document_date: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

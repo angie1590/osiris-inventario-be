@@ -45,6 +45,7 @@ from app.schemas.inventory import (
     SupplierResponse,
     SupplierUpdate,
     SaleExchangeCreate,
+    SaleExchangeReversalResponse,
     SaleExchangeResponse,
     VoidRequest,
 )
@@ -915,6 +916,8 @@ async def exchange_sale(
             current_user.id,
             current_user.username,
             body.authorizer_pin,
+            body.payment_method,
+            body.bank_name,
             request,
         )
     )
@@ -925,6 +928,33 @@ async def exchange_sale(
         "return_total": return_total,
         "new_total": new_total,
         "difference_total": difference_total,
+    }
+
+
+@router.post(
+    "/egresos/{document_id}/exchange/revert",
+    response_model=SaleExchangeReversalResponse,
+)
+async def revert_sale_exchange(
+    document_id: int,
+    body: VoidRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(_read_roles),
+):
+    svc = InventoryService(db)
+    original, returned, new, refunded_amount = await svc.revert_sale_exchange(
+        document_id,
+        current_user.id,
+        current_user.username,
+        body.authorizer_pin,
+        request,
+    )
+    return {
+        "original_document": original,
+        "return_document": returned,
+        "new_document": new,
+        "refunded_amount": refunded_amount,
     }
 
 

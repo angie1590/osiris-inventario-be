@@ -594,6 +594,8 @@ class InventoryService:
         bank_name: str | None = None,
         amount_received: Decimal | None = None,
         customer_id: int | None = None,
+        allow_insufficient_payment: bool = False,
+        credit_applied_amount: Decimal = Decimal("0"),
     ) -> InventoryDocument:
         if not lines_data:
             raise ValidationAppError(
@@ -701,6 +703,10 @@ class InventoryService:
             )
 
         change_amount: Decimal | None = None
+        outstanding_amount: Decimal | None = None
+        credit_applied_amount = Decimal(str(credit_applied_amount)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
         if egreso_type == "sale":
             result = await self.db.execute(select(CompanyConfig).limit(1))
             company = result.scalar_one_or_none()
@@ -745,21 +751,28 @@ class InventoryService:
                 (Decimal(str(line.quantity)) * Decimal(str(line.unit_price or 0)) for line in lines_data),
                 Decimal("0"),
             ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if credit_applied_amount < 0 or credit_applied_amount > sale_total:
+                raise ValidationAppError(
+                    "INVALID_CREDIT_APPLIED", "El crédito aplicado no es válido"
+                )
+            amount_due = sale_total - credit_applied_amount
             received = (
-                sale_total
+                amount_due
                 if amount_received is None
                 else Decimal(str(amount_received)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             )
-            if received < sale_total:
-                missing = (sale_total - received).quantize(
+            if received < amount_due:
+                missing = (amount_due - received).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
-                raise ValidationAppError(
-                    "INSUFFICIENT_PAYMENT",
-                    f"El valor recibido es menor al total de la factura. Faltante: {missing:.2f}",
-                )
+                if not allow_insufficient_payment:
+                    raise ValidationAppError(
+                        "INSUFFICIENT_PAYMENT",
+                        f"El valor recibido es menor al total de la factura. Faltante: {missing:.2f}",
+                    )
+                outstanding_amount = missing
             amount_received = received
-            change_amount = (received - sale_total).quantize(
+            change_amount = max(received - amount_due, Decimal("0")).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
 
@@ -788,6 +801,8 @@ class InventoryService:
             bank_name=bank_name if egreso_type == "sale" else None,
             amount_received=amount_received if egreso_type == "sale" else None,
             change_amount=change_amount,
+            outstanding_amount=outstanding_amount,
+            credit_applied_amount=credit_applied_amount if egreso_type == "sale" else None,
             purchase_document_date=purchase_document_date,
             baja_reason=baja_reason,
             adjustment_reason=adjustment_reason,
@@ -1363,6 +1378,17 @@ class InventoryService:
                 "DOCUMENT_NOT_APPROVED",
                 "Solo se pueden anular documentos aprobados",
             )
+        if any(
+            (
+                doc.exchange_original_document_id,
+                doc.exchange_return_document_id,
+                doc.exchange_new_sale_document_id,
+            )
+        ):
+            raise ValidationAppError(
+                "EXCHANGE_DOCUMENT_VOID_FORBIDDEN",
+                "No se puede anular individualmente un documento que pertenece a un cambio",
+            )
 
         actor = await self.db.get(User, actor_id)
         if not actor:
@@ -1420,6 +1446,8 @@ class InventoryService:
         actor_id: int,
         actor_name: str,
         authorizer_pin: str | None,
+        payment_method: str | None = None,
+        bank_name: str | None = None,
         request=None,
     ) -> tuple[InventoryDocument, InventoryDocument, InventoryDocument, Decimal, Decimal, Decimal]:
         original = await self.repo.get_by_id(document_id)
@@ -1584,6 +1612,14 @@ class InventoryService:
                 "El cambio debe incluir al menos un producto nuevo",
             )
 
+        new_total = new_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return_total = return_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if new_total < return_total:
+            raise ValidationAppError(
+                "EXCHANGE_NEW_TOTAL_BELOW_RETURN",
+                "El total del nuevo egreso no puede ser menor a la devolución",
+            )
+
         await self._validate_enabled_ingreso_type("customer_return")
         self._validate_document_type_for_ingreso("customer_return", "credit_note")
 
@@ -1645,9 +1681,13 @@ class InventoryService:
                 doc_number = await self._build_exchange_document_number(doc_number)
         sale_date = purchase_document_date or original.purchase_document_date
 
-        difference_total = (new_total - return_total).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
+        difference_total = new_total - return_total
+        credit_applied_amount = min(return_total, new_total)
+        if difference_total > 0 and not payment_method:
+            raise ValidationAppError(
+                "PAYMENT_METHOD_REQUIRED",
+                "La forma de pago es obligatoria para cobrar el saldo del cambio",
+            )
 
         original_notes = (notes or "").strip()
         change_note = (
@@ -1673,9 +1713,10 @@ class InventoryService:
             request,
             commit=False,
             validate_seller_enabled=False,
-            payment_method=original.payment_method,
-            bank_name=original.bank_name,
-            amount_received=original.amount_received,
+            payment_method=payment_method or original.payment_method,
+            bank_name=bank_name,
+            amount_received=max(difference_total, Decimal("0")),
+            credit_applied_amount=credit_applied_amount,
         )
 
         original.exchange_return_document_id = return_doc.id
@@ -1727,4 +1768,88 @@ class InventoryService:
             return_total,
             new_total,
             difference_total,
+        )
+
+    async def revert_sale_exchange(
+        self,
+        document_id: int,
+        actor_id: int,
+        actor_name: str,
+        authorizer_pin: str | None = None,
+        request=None,
+    ) -> tuple[InventoryDocument, InventoryDocument, InventoryDocument, Decimal]:
+        requested_doc = await self.repo.get_by_id(document_id)
+        if not requested_doc:
+            raise NotFoundError("DOCUMENT_NOT_FOUND", "Document not found")
+        new_doc = requested_doc
+        if new_doc.exchange_new_sale_document_id:
+            new_doc = await self.repo.get_by_id(new_doc.exchange_new_sale_document_id)
+            if not new_doc:
+                raise ValidationAppError(
+                    "EXCHANGE_REVERSAL_INCOMPLETE", "No se encontró el cambio completo"
+                )
+        original_id = new_doc.exchange_original_document_id
+        return_id = new_doc.exchange_return_document_id
+        if not original_id or not return_id:
+            raise ValidationAppError(
+                "EXCHANGE_REVERSAL_NOT_ALLOWED",
+                "Solo se puede revertir la nueva venta de un cambio",
+            )
+        original = await self.repo.get_by_id(original_id)
+        return_doc = await self.repo.get_by_id(return_id)
+        if not original or not return_doc:
+            raise ValidationAppError(
+                "EXCHANGE_REVERSAL_INCOMPLETE", "No se encontró el cambio completo"
+            )
+        if any(doc.status != DocumentStatus.approved for doc in (new_doc, return_doc)):
+            raise ConflictError(
+                "EXCHANGE_REVERSAL_NOT_APPROVED",
+                "Los documentos del cambio ya no se pueden revertir",
+            )
+
+        actor = await self.db.get(User, actor_id)
+        if not actor:
+            raise NotFoundError("USER_NOT_FOUND", "User not found")
+        authorizer = await self._resolve_void_authorizer(actor, authorizer_pin)
+        await self._assert_void_possible(new_doc)
+        await self._assert_void_possible(return_doc)
+
+        method = await self._get_kardex_method()
+        kardex = KardexService(self.db, method)
+        for doc in (new_doc, return_doc):
+            await kardex.reverse_document(doc)
+            for line in doc.lines:
+                await self.product_repo.update_stock(
+                    line.product_id, self._void_stock_delta(doc, line)
+                )
+            doc.status = DocumentStatus.voided
+            doc.authorized_by = authorizer.id
+
+        original.exchange_return_document_id = None
+        original.exchange_return_document_number = None
+        original.exchange_new_sale_document_id = None
+        original.exchange_new_sale_document_number = None
+        refunded_amount = Decimal(str(new_doc.amount_received or 0)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        await self.audit.log(
+            AuditAction.CANCEL,
+            user_id=actor_id,
+            username=actor_name,
+            entity_type="inventory_sale_exchange",
+            entity_id=new_doc.id,
+            previous={"new_document": new_doc.number, "return_document": return_doc.number},
+            new={"status": "reverted", "refunded_amount": str(refunded_amount)},
+            description=(
+                f"Cambio revertido: {new_doc.number} y {return_doc.number}; "
+                f"reembolso {refunded_amount:.2f}"
+            ),
+            request=request,
+        )
+        await self.db.commit()
+        return (
+            await self.repo.get_by_id(original.id),
+            await self.repo.get_by_id(return_doc.id),
+            await self.repo.get_by_id(new_doc.id),
+            refunded_amount,
         )

@@ -842,6 +842,7 @@ async def report_cierre_dia(
     unclassified_total = Decimal("0")
     transfer_by_bank: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     sales_total = Decimal("0")
+    collected_total = Decimal("0")
     returns_total = Decimal("0")
     sales_count = 0
     returns_count = 0
@@ -852,13 +853,15 @@ async def report_cierre_dia(
         if is_sale:
             sales_count += 1
             sales_total += total
+            collected = Decimal(str(document.amount_received if document.amount_received is not None else total))
+            collected_total += collected
             payment_method = (document.payment_method or "").strip().upper()
             if payment_method == "EFECTIVO":
-                cash_total += total
+                cash_total += collected
             elif payment_method == "TRANSFERENCIA":
-                transfer_total += total
+                transfer_total += collected
                 bank = (document.bank_name or "SIN BANCO").strip().upper() or "SIN BANCO"
-                transfer_by_bank[bank] += total
+                transfer_by_bank[bank] += collected
         else:
             returns_count += 1
             returns_total += total
@@ -871,13 +874,14 @@ async def report_cierre_dia(
                 "created_at": document.created_at.isoformat(),
                 "number": document.number,
                 "total": float(total),
+                "amount_collected": float(collected) if is_sale else None,
                 "payment_method": document.payment_method,
                 "bank_name": document.bank_name,
             }
         )
 
-    unclassified_total = sales_total - cash_total - transfer_total
-    net_total = sales_total - returns_total
+    unclassified_total = collected_total - cash_total - transfer_total
+    net_total = collected_total - returns_total
     return {
         "date": date_,
         "summary": {

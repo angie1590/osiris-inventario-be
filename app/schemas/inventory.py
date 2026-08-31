@@ -363,6 +363,8 @@ class SaleExchangeCreate(BaseModel):
     reference: str | None = Field(None, max_length=200)
     notes: str | None = Field(None, max_length=2000)
     authorizer_pin: str | None = None
+    payment_method: str | None = Field(None, max_length=50)
+    bank_name: str | None = Field(None, max_length=150)
 
 
 class SaleExchangeResponse(BaseModel):
@@ -372,6 +374,13 @@ class SaleExchangeResponse(BaseModel):
     return_total: Decimal
     new_total: Decimal
     difference_total: Decimal
+
+
+class SaleExchangeReversalResponse(BaseModel):
+    original_document: "DocumentResponse"
+    return_document: "DocumentResponse"
+    new_document: "DocumentResponse"
+    refunded_amount: Decimal
 
 
 class DocumentLineResponse(BaseModel):
@@ -600,6 +609,8 @@ class DocumentResponse(BaseModel):
     bank_name: str | None = None
     amount_received: Decimal | None = None
     change_amount: Decimal | None = None
+    outstanding_amount: Decimal | None = None
+    credit_applied_amount: Decimal | None = None
     purchase_document_date: datetime | None
     reference: str | None
     notes: str | None

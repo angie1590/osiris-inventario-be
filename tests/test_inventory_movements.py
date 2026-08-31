@@ -1037,6 +1037,7 @@ async def test_sale_exchange_keeps_original_and_creates_return_and_new_sale(
             ],
             "authorizer_pin": "1234",
             "notes": "Cambio por talla",
+            "payment_method": "EFECTIVO",
         },
         headers={"Authorization": f"Bearer {operator_token}"},
     )
@@ -1053,11 +1054,47 @@ async def test_sale_exchange_keeps_original_and_creates_return_and_new_sale(
     assert float(body["return_total"]) == 20.0
     assert float(body["new_total"]) == 24.0
     assert float(body["difference_total"]) == 4.0
+    assert float(body["new_document"]["amount_received"]) == 4.0
+    assert float(body["new_document"]["credit_applied_amount"]) == 20.0
+    assert body["new_document"]["outstanding_amount"] is None
+
+    closing = await client.get(
+        "/api/v1/reports/cierre-dia",
+        params={"date": datetime.now(timezone.utc).date().isoformat()},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert closing.status_code == 200, closing.text
+    exchange_sale = next(
+        item for item in closing.json()["documents"] if item["id"] == body["new_document"]["id"]
+    )
+    assert float(exchange_sale["amount_collected"]) == 4.0
+
+    blocked_void = await client.post(
+        f"/api/v1/inventory/documents/{body['new_document']['id']}/void",
+        json={},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert blocked_void.status_code == 422
+    assert blocked_void.json()["code"] == "EXCHANGE_DOCUMENT_VOID_FORBIDDEN"
 
     stock_a = await _stock(client, admin_token, prod_a)
     stock_b = await _stock(client, admin_token, prod_b)
     assert stock_a == 7.0
     assert stock_b == 8.0
+
+    reverted = await client.post(
+        f"/api/v1/inventory/egresos/{body['new_document']['id']}/exchange/revert",
+        json={},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert reverted.status_code == 200, reverted.text
+    reversed_body = reverted.json()
+    assert reversed_body["new_document"]["status"] == "voided"
+    assert reversed_body["return_document"]["status"] == "voided"
+    assert reversed_body["original_document"]["exchange_new_sale_document_id"] is None
+    assert float(reversed_body["refunded_amount"]) == 4.0
+    assert await _stock(client, admin_token, prod_a) == 5.0
+    assert await _stock(client, admin_token, prod_b) == 10.0
 
 
 @pytest.mark.asyncio
@@ -1115,6 +1152,26 @@ async def test_sale_exchange_validates_return_cannot_exceed_sold(
     )
     assert resp.status_code == 422
     assert resp.json().get("code") == "EXCHANGE_RETURN_EXCEEDS_SOLD"
+
+    below_return = await client.post(
+        f"/api/v1/inventory/egresos/{sale['id']}/exchange",
+        json={
+            "returned_lines": [
+                {
+                    "product_id": prod_id,
+                    "quantity": "2.00",
+                    "return_condition": "available",
+                }
+            ],
+            "new_lines": [
+                {"product_id": prod_new, "quantity": "1.00", "unit_price": "10.00"}
+            ],
+            "authorizer_pin": "1234",
+        },
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+    assert below_return.status_code == 422
+    assert below_return.json().get("code") == "EXCHANGE_NEW_TOTAL_BELOW_RETURN"
 
 
 @pytest.mark.asyncio
