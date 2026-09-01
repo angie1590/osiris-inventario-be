@@ -113,6 +113,11 @@ def _movement_type_label(flow: Literal["ingresos", "egresos"], value: str) -> st
     return _EGRESO_TYPE_LABELS.get(value, value)
 
 
+# Voided/cancelled documents never happened; pending ones are still awaiting
+# approval and must stay visible.
+_DISCARDED_STATUSES = (DocumentStatus.voided, DocumentStatus.cancelled)
+
+
 def _sale_line_amount(
     quantity: Decimal,
     unit_price: Decimal,
@@ -137,6 +142,76 @@ def _sale_line_amount(
     else:
         discount = raw_discount
     return max(Decimal("0"), subtotal - min(subtotal, discount))
+
+
+async def _returned_amount_by_exchange(
+    db: AsyncSession, exchange_ids: set[int]
+) -> dict[int, Decimal]:
+    returned_by_exchange: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+    if not exchange_ids:
+        return returned_by_exchange
+
+    returns_result = await db.execute(
+        select(
+            InventoryDocument.exchange_original_document_id,
+            InventoryDocumentLine.quantity,
+            InventoryDocumentLine.unit_price,
+            InventoryDocumentLine.unit_price_base,
+            InventoryDocumentLine.discount_type,
+            InventoryDocumentLine.discount_value,
+        )
+        .join(
+            InventoryDocumentLine,
+            InventoryDocumentLine.document_id == InventoryDocument.id,
+        )
+        .where(
+            InventoryDocument.doc_type == DocumentType.IN,
+            InventoryDocument.ingreso_type == "customer_return",
+            InventoryDocument.status.notin_(_DISCARDED_STATUSES),
+            InventoryDocument.exchange_original_document_id.in_(exchange_ids),
+        )
+    )
+    for (
+        exchange_id,
+        quantity,
+        unit_price,
+        unit_price_base,
+        discount_type,
+        discount_value,
+    ) in returns_result.all():
+        returned_by_exchange[int(exchange_id)] += _sale_line_amount(
+            Decimal(str(quantity or 0)),
+            Decimal(str(unit_price or 0)),
+            Decimal(str(unit_price_base)) if unit_price_base is not None else None,
+            discount_type,
+            Decimal(str(discount_value)) if discount_value is not None else None,
+        )
+    return returned_by_exchange
+
+
+async def _net_exchange_sales(
+    db: AsyncSession,
+    sale_docs: list[InventoryDocument],
+    sale_amount_by_doc: dict[int, Decimal],
+) -> None:
+    """In an exchange only the difference paid by the customer is revenue, so
+    subtract the returned goods from the replacement sale."""
+    returned_by_exchange = await _returned_amount_by_exchange(
+        db,
+        {
+            doc.exchange_original_document_id
+            for doc in sale_docs
+            if doc.exchange_original_document_id is not None
+        },
+    )
+    for doc in sale_docs:
+        exchange_id = doc.exchange_original_document_id
+        if exchange_id is None:
+            continue
+        returned = returned_by_exchange.get(int(exchange_id), Decimal("0"))
+        sale_amount_by_doc[doc.id] = max(
+            Decimal("0"), sale_amount_by_doc[doc.id] - returned
+        )
 
 
 def _local_date_key(dt: datetime) -> str:
@@ -361,6 +436,7 @@ async def report_ingresos(
     date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
     q = select(InventoryDocument).where(
         InventoryDocument.doc_type == DocumentType.IN,
+        InventoryDocument.status.notin_(_DISCARDED_STATUSES),
         InventoryDocument.created_at >= date_from_dt,
         InventoryDocument.created_at <= date_to_dt,
     )
@@ -446,6 +522,7 @@ async def report_egresos(
     date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
     q = select(InventoryDocument).where(
         InventoryDocument.doc_type == DocumentType.EG,
+        InventoryDocument.status.notin_(_DISCARDED_STATUSES),
         InventoryDocument.created_at >= date_from_dt,
         InventoryDocument.created_at <= date_to_dt,
     )
@@ -532,6 +609,7 @@ async def report_ventas(
         select(InventoryDocument).where(
             InventoryDocument.doc_type == DocumentType.EG,
             InventoryDocument.ingreso_type == "sale",
+            InventoryDocument.status.notin_(_DISCARDED_STATUSES),
             InventoryDocument.created_at >= date_from_dt,
             InventoryDocument.created_at <= date_to_dt,
         )
@@ -540,6 +618,7 @@ async def report_ventas(
         select(InventoryDocument).where(
             InventoryDocument.doc_type == DocumentType.IN,
             InventoryDocument.ingreso_type == "purchase",
+            InventoryDocument.status.notin_(_DISCARDED_STATUSES),
             InventoryDocument.created_at >= date_from_dt,
             InventoryDocument.created_at <= date_to_dt,
         )
@@ -589,6 +668,8 @@ async def report_ventas(
                 discount_type,
                 Decimal(str(discount_value)) if discount_value is not None else None,
             )
+
+        await _net_exchange_sales(db, sale_docs, sale_amount_by_doc)
 
     if purchase_doc_ids:
         purchase_lines_result = await db.execute(
@@ -887,6 +968,14 @@ async def report_cierre_dia(
     transfer_total = Decimal("0")
     unclassified_total = Decimal("0")
     transfer_by_bank: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    returned_by_exchange = await _returned_amount_by_exchange(
+        db,
+        {
+            document.exchange_original_document_id
+            for document in documents
+            if document.exchange_original_document_id is not None
+        },
+    )
     sales_total = Decimal("0")
     collected_total = Decimal("0")
     returns_total = Decimal("0")
@@ -903,7 +992,13 @@ async def report_cierre_dia(
             sales_total += total
             # amount_received is the cash handed over by the customer (change
             # included), so cash in the drawer is the sale net of store credit.
+            # Exchanges created before credit_applied_amount existed fall back
+            # to the linked return.
             credit_applied = Decimal(str(document.credit_applied_amount or 0))
+            if not credit_applied and document.exchange_original_document_id:
+                credit_applied = returned_by_exchange.get(
+                    int(document.exchange_original_document_id), Decimal("0")
+                )
             collected = max(Decimal("0"), total - credit_applied)
             collected_total += collected
             payment_method = (document.payment_method or "").strip().upper()
@@ -970,6 +1065,7 @@ async def report_bajas(
     date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
     q = select(InventoryDocument).where(
         InventoryDocument.doc_type == DocumentType.BI,
+        InventoryDocument.status.notin_(_DISCARDED_STATUSES),
         InventoryDocument.created_at >= date_from_dt,
         InventoryDocument.created_at <= date_to_dt,
     )
@@ -1044,6 +1140,7 @@ async def report_ajustes(
     date_from_dt, date_to_dt = _resolve_report_range(date_from, date_to)
     q = select(InventoryDocument).where(
         InventoryDocument.doc_type == DocumentType.AI,
+        InventoryDocument.status.notin_(_DISCARDED_STATUSES),
         InventoryDocument.created_at >= date_from_dt,
         InventoryDocument.created_at <= date_to_dt,
     )
@@ -1282,6 +1379,7 @@ async def report_movimientos_por_usuario(
         select(InventoryDocument)
         .where(
             InventoryDocument.created_by == user_id,
+            InventoryDocument.status.notin_(_DISCARDED_STATUSES),
             InventoryDocument.created_at >= date_from_dt,
             InventoryDocument.created_at <= date_to_dt,
         )
@@ -1492,6 +1590,10 @@ async def report_consolidado(
             InventoryDocument.ingreso_type,
             InventoryDocumentLine.quantity,
             InventoryDocumentLine.unit_cost,
+            InventoryDocumentLine.unit_price,
+            InventoryDocumentLine.unit_price_base,
+            InventoryDocumentLine.discount_type,
+            InventoryDocumentLine.discount_value,
         )
         .join(
             InventoryDocumentLine,
@@ -1500,12 +1602,35 @@ async def report_consolidado(
         .where(
             InventoryDocument.created_at >= date_from_dt,
             InventoryDocument.created_at <= date_to_dt,
+            InventoryDocument.status.notin_(_DISCARDED_STATUSES),
             InventoryDocument.doc_type.in_([DocumentType.IN, DocumentType.EG]),
         )
     )
 
-    for doc_type, raw_type, quantity, unit_cost in amount_result.all():
-        amount = (quantity or Decimal("0")) * (unit_cost or Decimal("0"))
+    for (
+        doc_type,
+        raw_type,
+        quantity,
+        unit_cost,
+        unit_price,
+        unit_price_base,
+        discount_type,
+        discount_value,
+    ) in amount_result.all():
+        quantity = Decimal(str(quantity or 0))
+        # Sales and customer returns move money at sale price; everything else
+        # is valued at cost.
+        if raw_type in ("sale", "customer_return"):
+            amount = _sale_line_amount(
+                quantity,
+                Decimal(str(unit_price or 0)),
+                Decimal(str(unit_price_base)) if unit_price_base is not None else None,
+                discount_type,
+                Decimal(str(discount_value)) if discount_value is not None else None,
+            )
+        else:
+            amount = quantity * Decimal(str(unit_cost or 0))
+
         if doc_type == DocumentType.IN:
             movements_amount["IN"] += amount
             type_key = raw_type or "other"
