@@ -331,7 +331,9 @@ async def report_settings(
     )
     return {
         "stock_quantity_mode": await _get_stock_quantity_mode(db),
-        "internal_code_enabled": await _get_bool_param(db, "internal_code_enabled", default=True),
+        "internal_code_enabled": await _get_bool_param(
+            db, "internal_code_enabled", default=True
+        ),
         "sale_product_code_display": (
             await _get_text_param(db, "sale_product_code_display", default="internal")
         ),
@@ -567,9 +569,19 @@ async def report_ventas(
             )
             .join(Product, Product.id == InventoryDocumentLine.product_id)
             .where(InventoryDocumentLine.document_id.in_(sale_doc_ids))
-            .order_by(InventoryDocumentLine.document_id.asc(), InventoryDocumentLine.id.asc())
+            .order_by(
+                InventoryDocumentLine.document_id.asc(), InventoryDocumentLine.id.asc()
+            )
         )
-        for doc_id, quantity, unit_price, unit_price_base, discount_type, discount_value, _product_name in sale_lines_result.all():
+        for (
+            doc_id,
+            quantity,
+            unit_price,
+            unit_price_base,
+            discount_type,
+            discount_value,
+            _product_name,
+        ) in sale_lines_result.all():
             sale_amount_by_doc[int(doc_id)] += _sale_line_amount(
                 Decimal(str(quantity or 0)),
                 Decimal(str(unit_price or 0)),
@@ -586,18 +598,24 @@ async def report_ventas(
                 InventoryDocumentLine.unit_cost,
             )
             .where(InventoryDocumentLine.document_id.in_(purchase_doc_ids))
-            .order_by(InventoryDocumentLine.document_id.asc(), InventoryDocumentLine.id.asc())
+            .order_by(
+                InventoryDocumentLine.document_id.asc(), InventoryDocumentLine.id.asc()
+            )
         )
         for doc_id, quantity, unit_cost in purchase_lines_result.all():
-            purchase_amount_by_doc[int(doc_id)] += Decimal(str(quantity or 0)) * Decimal(
-                str(unit_cost or 0)
-            )
+            purchase_amount_by_doc[int(doc_id)] += Decimal(
+                str(quantity or 0)
+            ) * Decimal(str(unit_cost or 0))
 
     daily_closings: dict[str, dict[str, Decimal | int]] = defaultdict(
         lambda: {"sales_count": 0, "sales_total": Decimal("0")}
     )
     seller_summary: dict[str, dict[str, Decimal | int]] = defaultdict(
-        lambda: {"sales_count": 0, "sales_total": Decimal("0"), "commission_amount": Decimal("0")}
+        lambda: {
+            "sales_count": 0,
+            "sales_total": Decimal("0"),
+            "commission_amount": Decimal("0"),
+        }
     )
     seller_commissions_by_month: dict[
         tuple[str, str], dict[str, Decimal | int | str]
@@ -643,7 +661,9 @@ async def report_ventas(
             )
             .join(Product, Product.id == InventoryDocumentLine.product_id)
             .where(InventoryDocumentLine.document_id.in_(sale_doc_ids))
-            .order_by(InventoryDocumentLine.document_id.asc(), InventoryDocumentLine.id.asc())
+            .order_by(
+                InventoryDocumentLine.document_id.asc(), InventoryDocumentLine.id.asc()
+            )
         )
         for doc_id, quantity, product_name in sale_quantity_result.all():
             doc = sale_doc_lookup.get(int(doc_id))
@@ -651,12 +671,19 @@ async def report_ventas(
                 continue
             quarter_key = _local_quarter_key(doc.created_at)
             quarter_data = quarterly_summary[quarter_key]
-            product_name_key = (product_name or "SIN PRODUCTO").strip().upper() or "SIN PRODUCTO"
+            product_name_key = (
+                product_name or "SIN PRODUCTO"
+            ).strip().upper() or "SIN PRODUCTO"
             quantity_decimal = Decimal(str(quantity or 0))
-            quarter_data["products_sold"] = Decimal(str(quarter_data["products_sold"])) + quantity_decimal
-            quarterly_product_quantities[quarter_key][product_name_key] = Decimal(
-                str(quarterly_product_quantities[quarter_key][product_name_key])
-            ) + quantity_decimal
+            quarter_data["products_sold"] = (
+                Decimal(str(quarter_data["products_sold"])) + quantity_decimal
+            )
+            quarterly_product_quantities[quarter_key][product_name_key] = (
+                Decimal(
+                    str(quarterly_product_quantities[quarter_key][product_name_key])
+                )
+                + quantity_decimal
+            )
 
     for doc in sale_docs:
         month_key = _local_month_key(doc.created_at)
@@ -670,11 +697,15 @@ async def report_ventas(
         purchases_total += doc_total
         purchases_count += 1
         quarter_data = quarterly_summary[purchase_doc_quarter[doc.id]]
-        quarter_data["purchase_total"] = Decimal(str(quarter_data["purchase_total"])) + doc_total
+        quarter_data["purchase_total"] = (
+            Decimal(str(quarter_data["purchase_total"])) + doc_total
+        )
 
     for doc in sale_docs:
         doc_total = sale_amount_by_doc.get(doc.id, Decimal("0"))
-        seller_name = (doc.seller_name or "SIN VENDEDOR").strip().upper() or "SIN VENDEDOR"
+        seller_name = (
+            doc.seller_name or "SIN VENDEDOR"
+        ).strip().upper() or "SIN VENDEDOR"
         date_key = _local_date_key(doc.created_at)
         month_key = sale_doc_month.get(doc.id, _local_month_key(doc.created_at))
         quarter_key = sale_doc_quarter.get(doc.id, _local_quarter_key(doc.created_at))
@@ -691,7 +722,9 @@ async def report_ventas(
         seller = seller_summary[seller_name]
         seller["sales_count"] = int(seller["sales_count"]) + 1
         seller["sales_total"] = Decimal(str(seller["sales_total"])) + doc_total
-        seller["commission_amount"] = Decimal(str(seller["commission_amount"])) + doc_commission
+        seller["commission_amount"] = (
+            Decimal(str(seller["commission_amount"])) + doc_commission
+        )
 
         month_key_tuple = (month_key, seller_name)
         monthly = seller_commissions_by_month[month_key_tuple]
@@ -699,10 +732,14 @@ async def report_ventas(
         monthly["month"] = month_key
         monthly["sales_count"] = int(monthly["sales_count"]) + 1
         monthly["sales_total"] = Decimal(str(monthly["sales_total"])) + doc_total
-        monthly["commission_amount"] = Decimal(str(monthly["commission_amount"])) + doc_commission
+        monthly["commission_amount"] = (
+            Decimal(str(monthly["commission_amount"])) + doc_commission
+        )
 
         quarter_data = quarterly_summary[quarter_key]
-        quarter_data["sales_total"] = Decimal(str(quarter_data["sales_total"])) + doc_total
+        quarter_data["sales_total"] = (
+            Decimal(str(quarter_data["sales_total"])) + doc_total
+        )
 
     quarterly_rows = []
     for quarter_key in sorted(quarterly_summary.keys()):
@@ -711,9 +748,9 @@ async def report_ventas(
         top_product_name = "SIN PRODUCTO"
         top_product_quantity = Decimal("0")
         if product_quantities:
-          top_product_name, top_product_quantity = max(
-              product_quantities.items(), key=lambda item: (item[1], item[0])
-          )
+            top_product_name, top_product_quantity = max(
+                product_quantities.items(), key=lambda item: (item[1], item[0])
+            )
         quarterly_rows.append(
             {
                 "quarter": quarter_key,
@@ -751,7 +788,9 @@ async def report_ventas(
             "commission_amount": float(values["commission_amount"]),
         }
         for seller_name, values in sorted(
-            seller_summary.items(), key=lambda item: float(item[1]["sales_total"]), reverse=True
+            seller_summary.items(),
+            key=lambda item: float(item[1]["sales_total"]),
+            reverse=True,
         )
     ]
 
@@ -808,7 +847,7 @@ async def report_cierre_dia(
                 and_(
                     InventoryDocument.doc_type == DocumentType.IN,
                     InventoryDocument.ingreso_type == "customer_return",
-                        InventoryDocument.exchange_original_document_id.is_(None),
+                    InventoryDocument.exchange_original_document_id.is_(None),
                 ),
             ),
         )
@@ -828,7 +867,14 @@ async def report_cierre_dia(
                 InventoryDocumentLine.discount_value,
             ).where(InventoryDocumentLine.document_id.in_(document_ids))
         )
-        for document_id, quantity, unit_price, unit_price_base, discount_type, discount_value in lines_result.all():
+        for (
+            document_id,
+            quantity,
+            unit_price,
+            unit_price_base,
+            discount_type,
+            discount_value,
+        ) in lines_result.all():
             amounts[int(document_id)] += _sale_line_amount(
                 Decimal(str(quantity or 0)),
                 Decimal(str(unit_price or 0)),
@@ -849,18 +895,25 @@ async def report_cierre_dia(
     rows = []
     for document in documents:
         total = amounts[document.id].quantize(Decimal("0.01"))
-        is_sale = document.doc_type == DocumentType.EG and document.ingreso_type == "sale"
+        is_sale = (
+            document.doc_type == DocumentType.EG and document.ingreso_type == "sale"
+        )
         if is_sale:
             sales_count += 1
             sales_total += total
-            collected = Decimal(str(document.amount_received if document.amount_received is not None else total))
+            # amount_received is the cash handed over by the customer (change
+            # included), so cash in the drawer is the sale net of store credit.
+            credit_applied = Decimal(str(document.credit_applied_amount or 0))
+            collected = max(Decimal("0"), total - credit_applied)
             collected_total += collected
             payment_method = (document.payment_method or "").strip().upper()
             if payment_method == "EFECTIVO":
                 cash_total += collected
             elif payment_method == "TRANSFERENCIA":
                 transfer_total += collected
-                bank = (document.bank_name or "SIN BANCO").strip().upper() or "SIN BANCO"
+                bank = (
+                    document.bank_name or "SIN BANCO"
+                ).strip().upper() or "SIN BANCO"
                 transfer_by_bank[bank] += collected
         else:
             returns_count += 1
@@ -1068,7 +1121,9 @@ async def report_stock(
         ids = await cat_repo.get_descendant_category_ids(category_id)
         q = q.where(Product.category_id.in_(ids))
     if bajo_stock is True:
-        q = q.where((Product.stock_minimo > 0) & (Product.stock_actual <= Product.stock_minimo))
+        q = q.where(
+            (Product.stock_minimo > 0) & (Product.stock_actual <= Product.stock_minimo)
+        )
     if cursor:
         q = q.where(Product.id > cursor)
     q = q.order_by(Product.id).limit(limit)
@@ -1470,7 +1525,9 @@ async def report_consolidado(
     )
     bajo_stock_count = await db.execute(
         select(func.count(Product.id)).where(
-            Product.status == "active", Product.stock_minimo > 0, Product.stock_actual <= Product.stock_minimo
+            Product.status == "active",
+            Product.stock_minimo > 0,
+            Product.stock_actual <= Product.stock_minimo,
         )
     )
 
@@ -1494,8 +1551,7 @@ async def report_consolidado(
             ),
             "egresos": dict(
                 sorted(
-                    (key, float(value))
-                    for key, value in egresos_amount_by_type.items()
+                    (key, float(value)) for key, value in egresos_amount_by_type.items()
                 )
             ),
         },
